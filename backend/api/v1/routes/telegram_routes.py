@@ -978,6 +978,38 @@ async def update_message_with_result(bot_token: str, chat_id: str, message_id: i
         logger.error(f"Update message error: {e}")
 
 
+async def update_message_with_edit_buttons(bot_token: str, chat_id: str, message_id: int, order_id: str, note: str = None):
+    """Restore Telegram message with approval buttons after edit"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            buttons = [
+                [
+                    {"text": "✅ Approve", "callback_data": f"approve:order:{order_id}"},
+                    {"text": "❌ Reject", "callback_data": f"reject:order:{order_id}"}
+                ],
+                [
+                    {"text": "✏️ Edit Amount", "callback_data": f"edit_amount:order:{order_id}"},
+                    {"text": "👁 View Details", "callback_data": f"view:order:{order_id}"}
+                ]
+            ]
+            
+            # Add note if provided
+            if note:
+                buttons.append([{"text": note, "callback_data": "info"}])
+            
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reply_markup": {"inline_keyboard": buttons}
+                }
+            )
+    except Exception as e:
+        logger.error(f"Update message error: {e}")
+
+
 # ==================== WEBHOOK SETUP ====================
 
 @router.post("/setup-webhook")
