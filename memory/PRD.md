@@ -98,6 +98,7 @@ Build a production-grade gaming transaction platform with one central backend th
 - ✅ Inline keyboard: Approve / Reject / View
 - ✅ Callback handler: `wl_approve`, `wl_reject`, `wl_view`
 - ✅ Auto-credit wallet on approval
+- ✅ **All callbacks use centralized `approval_service.py`**
 
 **Section 4: Game Loading (STRICT WALLET-ONLY)**
 - ✅ `POST /api/v1/games/load` - Load game from wallet ONLY
