@@ -451,17 +451,25 @@ class NotificationRouter:
                 entity_type = payload.action_data.get('entity_type', payload.reference_type or 'item')
                 reference_id = payload.action_data.get('reference_id', payload.reference_id)
                 
-                reply_markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "✅ Approve", "callback_data": f"approve:{entity_type}:{reference_id}"},
-                            {"text": "❌ Reject", "callback_data": f"reject:{entity_type}:{reference_id}"}
-                        ],
-                        [
-                            {"text": "👁 View Details", "callback_data": f"view:{entity_type}:{reference_id}"}
-                        ]
+                buttons = [
+                    [
+                        {"text": "✅ Approve", "callback_data": f"approve:{entity_type}:{reference_id}"},
+                        {"text": "❌ Reject", "callback_data": f"reject:{entity_type}:{reference_id}"}
                     ]
-                }
+                ]
+                
+                # Add Edit Amount button for orders (reviewer bots)
+                if entity_type == 'order':
+                    buttons.append([
+                        {"text": "✏️ Edit Amount", "callback_data": f"edit_amount:{entity_type}:{reference_id}"},
+                        {"text": "👁 View Details", "callback_data": f"view:{entity_type}:{reference_id}"}
+                    ])
+                else:
+                    buttons.append([
+                        {"text": "👁 View Details", "callback_data": f"view:{entity_type}:{reference_id}"}
+                    ])
+                
+                reply_markup = {"inline_keyboard": buttons}
             
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Send text message
