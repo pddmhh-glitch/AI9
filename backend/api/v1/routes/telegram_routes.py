@@ -612,16 +612,9 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
     
     order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     
-    # Refreshed order data check - for edit actions we need current state
     if not order:
         await answer_callback(bot['bot_token'], callback_id, "Order not found")
         return {"success": False}
-    
-    if not order:
-        await answer_callback(bot['bot_token'], callback_id, "Order not found")
-        return {"success": False}
-    
-    now = datetime.now(timezone.utc)
     
     # Handle edit_amount action - show amount options
     if action == 'edit_amount':
