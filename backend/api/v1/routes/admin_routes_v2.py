@@ -220,49 +220,23 @@ async def process_approval(
     data: ApprovalAction,
     authorization: str = Header(...)
 ):
-    """Process approval with mandatory logging"""
+    """Process approval using centralized approval service"""
+    from ..core.approval_service import approve_or_reject_order, ActorType
+    
     auth = await require_admin(request, authorization)
     
-    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
+    # Use the centralized approval service
+    result = await approve_or_reject_order(
+        order_id=order_id,
+        action=data.action,
+        actor_type=ActorType.ADMIN,
+        actor_id=auth.user_id,
+        final_amount=data.modified_amount,
+        rejection_reason=data.reason
+    )
     
-    if order['status'] not in ('pending_review', 'awaiting_payment_proof'):
-        raise HTTPException(status_code=400, detail=f"Order cannot be {data.action}d in status '{order['status']}'")
-    
-    now = datetime.now(timezone.utc)
-    
-    if data.action == 'approve':
-        new_status = 'approved'
-        
-        # If deposit, add to user balance
-        if order['order_type'] == 'deposit':
-            amount = data.modified_amount if data.modified_amount else order['amount']
-            bonus = order['bonus_amount']
-            
-            await execute("""
-                UPDATE users SET 
-                    real_balance = real_balance + $1,
-                    bonus_balance = bonus_balance + $2,
-                    deposit_count = deposit_count + 1,
-                    total_deposited = total_deposited + $1,
-                    signup_bonus_claimed = CASE WHEN $2 > 0 AND NOT signup_bonus_claimed THEN TRUE ELSE signup_bonus_claimed END,
-                    updated_at = NOW()
-                WHERE user_id = $3
-            """, amount, bonus, order['user_id'])
-    else:
-        new_status = 'rejected'
-    
-    await execute("""
-        UPDATE orders SET 
-            status = $1, 
-            approved_by = $2, 
-            approved_at = $3,
-            rejection_reason = $4,
-            amount = COALESCE($5, amount),
-            updated_at = NOW()
-        WHERE order_id = $6
-    """, new_status, auth.user_id, now, data.reason, data.modified_amount, order_id)
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.message)
     
     # Audit log
     await log_audit(auth.user_id, auth.username, f"approval.{data.action}", "order", order_id, {
@@ -270,7 +244,12 @@ async def process_approval(
         "modified_amount": data.modified_amount
     })
     
-    return {"success": True, "message": f"Order {data.action}d", "new_status": new_status}
+    return {
+        "success": True, 
+        "message": f"Order {data.action}d", 
+        "new_status": "approved" if data.action == "approve" else "rejected",
+        **result.data
+    }
 
 
 # ==================== 3. ORDERS ====================
