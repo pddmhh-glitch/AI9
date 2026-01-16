@@ -527,21 +527,39 @@ async def upload_payment_proof_bot(
         {"image_url": data.image_url[:100], "conversation_id": data.conversation_id}
     )
     
-    # Trigger Telegram notification
-    from .payment_routes import send_telegram_notification
-    telegram_result = await send_telegram_notification(
-        order_id=order_id,
-        order=order,
-        image_data=None,  # We're using URL, not base64
-        image_type=None
-    )
+    # Trigger Telegram notification via NotificationRouter (multi-bot system)
+    from ..core.notification_router import emit_event, EventType
+    
+    try:
+        await emit_event(
+            event_type=EventType.ORDER_CREATED,
+            title="New Game Load Order",
+            message=f"User: @{order['username']}\nGame: {order.get('game_display_name', order.get('game_name', 'N/A'))}\nAmount: ₱{order['amount']:,.2f}",
+            reference_id=order_id,
+            reference_type="order",
+            user_id=order['user_id'],
+            username=order['username'],
+            display_name=order.get('display_name'),
+            amount=order['amount'],
+            extra_data={
+                "order_type": order.get('order_type', 'deposit'),
+                "game_name": order.get('game_name'),
+                "image_url": data.image_url  # Forward to Telegram
+            },
+            requires_action=True,
+            entity_type="order"
+        )
+        telegram_notified = True
+    except Exception as e:
+        logger.warning(f"Failed to send Telegram notification: {e}")
+        telegram_notified = False
     
     return {
         "success": True,
         "message": "Payment proof uploaded successfully",
         "order_id": order_id,
         "status": "pending_review",
-        "telegram_notified": telegram_result.get('sent', False)
+        "telegram_notified": telegram_notified
     }
 
 
