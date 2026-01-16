@@ -604,21 +604,12 @@ async def handle_wallet_load_action(bot, action, request_id, callback_id, messag
         return {"success": result.success, **result.data}
     
     return {"success": False}
-            reference_type="wallet_load",
-            user_id=load_request['user_id'],
-            username=load_request.get('username'),
-            amount=load_request['amount'],
-            extra_data={"rejected_via": "telegram"},
-            requires_action=False
-        )
-        
-        return {"success": True, "status": "rejected"}
-    
-    return {"success": False}
 
 
 async def handle_order_action(bot, action, order_id, callback_id, message_id, admin_name, admin_id, extra_value=None):
-    """Handle order approve/reject/edit_amount with idempotency"""
+    """Handle order approve/reject/edit_amount using unified approval service"""
+    from ..core.approval_service import approve_or_reject_order, ActorType
+    
     order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     
     if not order:
