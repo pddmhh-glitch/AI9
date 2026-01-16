@@ -555,99 +555,41 @@ const AdminOperationsPanel = () => {
         </div>
       )}
 
-      {/* Telegram Tab */}
+      {/* Telegram Tab - REDIRECTS TO NEW MULTI-BOT SYSTEM */}
       {activeTab === 'telegram' && (
         <div className="space-y-6">
-          {/* Telegram Bot Configuration */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-              <Bot className="w-5 h-5 text-blue-400" />
-              Telegram Bot Configuration
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-blue-500/20 border border-blue-500/30 rounded-xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <Bot className="w-8 h-8 text-blue-400" />
               <div>
-                <label className="block text-gray-400 text-sm mb-2">Bot Token</label>
-                <input
-                  type="password"
-                  value={telegramForm.bot_token}
-                  onChange={(e) => setTelegramForm(prev => ({ ...prev, bot_token: e.target.value }))}
-                  placeholder="123456789:ABCdefGhIJKlmnoPQRstuVWXyz"
-                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-              <div>
-                <label className="block text-gray-400 text-sm mb-2">Admin Chat ID</label>
-                <input
-                  type="text"
-                  value={telegramForm.admin_chat_id}
-                  onChange={(e) => setTelegramForm(prev => ({ ...prev, admin_chat_id: e.target.value }))}
-                  placeholder="-1001234567890"
-                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-              <div>
-                <label className="block text-gray-400 text-sm mb-2">Notification Chat ID (Optional)</label>
-                <input
-                  type="text"
-                  value={telegramForm.notification_chat_id}
-                  onChange={(e) => setTelegramForm(prev => ({ ...prev, notification_chat_id: e.target.value }))}
-                  placeholder="-1001234567890"
-                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-              <div className="flex items-end">
-                <button
-                  onClick={handleSaveTelegramConfig}
-                  disabled={processing}
-                  className="px-6 py-3 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white font-medium rounded-lg transition flex items-center gap-2"
-                >
-                  <Check className="w-4 h-4" />
-                  Save Configuration
-                </button>
+                <h2 className="text-xl font-bold text-white">Telegram Configuration Moved</h2>
+                <p className="text-blue-300">
+                  Telegram bot management has been upgraded to a multi-bot system with per-event permissions.
+                </p>
               </div>
             </div>
-          </div>
-
-          {/* Payment Forwarding Settings */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-              <Send className="w-5 h-5 text-emerald-400" />
-              Payment Forwarding
-            </h2>
-            <div className="space-y-4">
-              <ForwardingToggle
-                label="Forward All Payments to Telegram"
-                description="Send all payment notifications to admin chat"
-                enabled={telegramForm.forward_payments}
-                onChange={(v) => setTelegramForm(prev => ({ ...prev, forward_payments: v }))}
-              />
-              <ForwardingToggle
-                label="Forward Load Requests"
-                description="Send cash-in / load requests to Telegram"
-                enabled={telegramForm.forward_loads}
-                onChange={(v) => setTelegramForm(prev => ({ ...prev, forward_loads: v }))}
-              />
-              <ForwardingToggle
-                label="Forward Withdrawal Requests"
-                description="Send cash-out / withdrawal requests to Telegram"
-                enabled={telegramForm.forward_withdrawals}
-                onChange={(v) => setTelegramForm(prev => ({ ...prev, forward_withdrawals: v }))}
-              />
+            
+            <div className="bg-gray-900/50 rounded-lg p-4 mb-4">
+              <h3 className="text-white font-medium mb-2">New Features:</h3>
+              <ul className="text-gray-300 text-sm space-y-1">
+                <li>• Multiple Telegram bots support</li>
+                <li>• Per-bot event permissions (toggle which events each bot receives)</li>
+                <li>• Reviewer bots can approve/reject/edit payments directly in Telegram</li>
+                <li>• Notification-only bots for alerts</li>
+                <li>• Secure webhook (no bot token in URL)</li>
+              </ul>
             </div>
+            
+            <a
+              href="/admin/system/telegram-bots"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-lg transition"
+            >
+              <ExternalLink className="w-4 h-4" />
+              Go to Telegram Bots Management
+            </a>
           </div>
-
-          {/* Telegram Actions */}
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-yellow-400" />
-                  Dynamic Telegram Actions
-                </h2>
-                <p className="text-gray-400 text-sm">Configure inline buttons for order notifications</p>
-              </div>
-              <button
-                onClick={() => {
+        </div>
+      )}
                   setEditingItem(null);
                   resetActionForm();
                   setShowActionModal(true);
