@@ -214,7 +214,7 @@ const PortalWallet = () => {
     setPromoMessage(null);
     try {
       const response = await axios.post(
-        `${BACKEND_URL}/api/v1/portal/promo/redeem`,
+        `${API_BASE}/api/v1/portal/promo/redeem`,
         { code: promoCode },
         { headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' } }
       );
