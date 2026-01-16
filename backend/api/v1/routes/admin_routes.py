@@ -76,15 +76,7 @@ class RuleCreate(BaseModel):
     is_active: bool = True
 
 
-class TelegramConfigUpdate(BaseModel):
-    """Update Telegram configuration"""
-    bot_token: Optional[str] = None
-    admin_chat_id: Optional[str] = None
-    notification_chat_id: Optional[str] = None
-    forward_payments: Optional[bool] = None
-    forward_deposits: Optional[bool] = None
-    forward_withdrawals: Optional[bool] = None
-    inline_actions: Optional[List[dict]] = None
+# TelegramConfigUpdate REMOVED - use /api/v1/admin/telegram/bots
 
 
 class SystemSettingsUpdate(BaseModel):
