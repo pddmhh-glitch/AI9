@@ -223,7 +223,7 @@ Build a production-grade gaming transaction platform with one central backend th
 
 ## Credentials
 - **Admin**: `admin` / `admin123`
-- **URL**: https://betpay-system.preview.emergentagent.com
+- **URL**: https://refactor-central.preview.emergentagent.com
 
 ---
 
