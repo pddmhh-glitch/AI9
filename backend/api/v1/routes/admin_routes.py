@@ -572,81 +572,47 @@ async def delete_rule(
     return {"success": True, "message": "Rule deleted"}
 
 
-# ==================== TELEGRAM CONFIG ====================
+# ==================== TELEGRAM CONFIG (DEPRECATED - Use /api/v1/admin/telegram/bots) ====================
 
-@router.get("/telegram", summary="Get Telegram configuration")
+@router.get("/telegram", summary="[DEPRECATED] Get Telegram configuration")
 async def get_telegram_config(
     request: Request,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """Get Telegram bot configuration"""
+    """
+    DEPRECATED: Use /api/v1/admin/telegram/bots for multi-bot management.
+    
+    This endpoint returns info about the new multi-bot system.
+    """
     auth = await require_admin(request, authorization)
     
-    config = await fetch_one("SELECT * FROM telegram_config WHERE id = 'default'")
-    if not config:
-        return {"configured": False}
-    
-    # Mask bot token
-    bot_token = config.get('bot_token', '')
-    if bot_token:
-        bot_token = bot_token[:10] + '...' + bot_token[-5:] if len(bot_token) > 15 else '****'
+    # Return info about new system
+    bots = await fetch_all("SELECT bot_id, name, is_active FROM telegram_bots LIMIT 5")
     
     return {
-        "configured": True,
-        "bot_token_masked": bot_token,
-        "admin_chat_id": config.get('admin_chat_id'),
-        "notification_chat_id": config.get('notification_chat_id'),
-        "forward_payments": config.get('forward_payments', False),
-        "forward_deposits": config.get('forward_deposits', False),
-        "forward_withdrawals": config.get('forward_withdrawals', False),
-        "inline_actions": json.loads(config['inline_actions']) if isinstance(config.get('inline_actions'), str) else config.get('inline_actions', [])
+        "configured": len(bots) > 0,
+        "message": "DEPRECATED: Use /api/v1/admin/telegram/bots for multi-bot management",
+        "bots_count": len(bots),
+        "bots": [{"bot_id": b['bot_id'], "name": b['name'], "is_active": b['is_active']} for b in bots],
+        "new_endpoint": "/api/v1/admin/telegram/bots"
     }
 
 
-@router.put("/telegram", summary="Update Telegram configuration")
+@router.put("/telegram", summary="[DEPRECATED] Update Telegram configuration")
 async def update_telegram_config(
     request: Request,
-    data: TelegramConfigUpdate,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """Update Telegram bot configuration"""
-    auth = await require_admin(request, authorization)
+    """
+    DEPRECATED: Use /api/v1/admin/telegram/bots for multi-bot management.
+    """
+    await require_admin(request, authorization)
     
-    updates = []
-    params = []
-    
-    if data.bot_token:
-        params.append(data.bot_token)
-        updates.append(f"bot_token = ${len(params)}")
-    if data.admin_chat_id is not None:
-        params.append(data.admin_chat_id)
-        updates.append(f"admin_chat_id = ${len(params)}")
-    if data.notification_chat_id is not None:
-        params.append(data.notification_chat_id)
-        updates.append(f"notification_chat_id = ${len(params)}")
-    if data.forward_payments is not None:
-        params.append(data.forward_payments)
-        updates.append(f"forward_payments = ${len(params)}")
-    if data.forward_deposits is not None:
-        params.append(data.forward_deposits)
-        updates.append(f"forward_deposits = ${len(params)}")
-    if data.forward_withdrawals is not None:
-        params.append(data.forward_withdrawals)
-        updates.append(f"forward_withdrawals = ${len(params)}")
-    if data.inline_actions is not None:
-        params.append(json.dumps(data.inline_actions))
-        updates.append(f"inline_actions = ${len(params)}")
-    
-    if updates:
-        updates.append("updated_at = NOW()")
-        await execute(
-            f"UPDATE telegram_config SET {', '.join(updates)} WHERE id = 'default'",
-            *params
-        )
-    
-    await log_audit(auth.user_id, auth.username, "admin.telegram_updated", "config", "telegram")
-    
-    return {"success": True, "message": "Telegram configuration updated"}
+    return {
+        "success": False,
+        "message": "DEPRECATED: Use /api/v1/admin/telegram/bots for multi-bot management",
+        "new_endpoint": "/api/v1/admin/telegram/bots"
+    }
 
 
 # ==================== SYSTEM SETTINGS ====================
