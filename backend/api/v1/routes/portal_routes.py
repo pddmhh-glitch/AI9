@@ -386,6 +386,26 @@ async def redeem_promo_code(
         {"code": code, "credit_amount": credit_amount}
     )
     
+    # Emit promo code redeemed notification
+    try:
+        from ..core.notification_router import emit_event, EventType
+        await emit_event(
+            event_type=EventType.PROMO_CODE_REDEEMED,
+            title="🎟️ Promo Code Redeemed",
+            message=f"Client {user['display_name']} redeemed promo code!\n\nCode: {code}\nCredits Added: ₱{credit_amount:,.2f}\nType: Play Credits",
+            reference_id=redemption_id,
+            reference_type="promo_redemption",
+            user_id=user['user_id'],
+            username=user['username'],
+            display_name=user.get('display_name'),
+            amount=credit_amount,
+            extra_data={"code": code, "credit_type": "play_credits"},
+            requires_action=False
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to send promo notification: {e}")
+    
     return {
         "success": True,
         "message": f"Promo applied! ${credit_amount:.2f} added as Play Credits",
