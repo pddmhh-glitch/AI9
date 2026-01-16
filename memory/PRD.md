@@ -284,12 +284,12 @@ Build a production-grade gaming transaction platform with one central backend th
 ## Backlog
 
 ### P1 - High Priority
+- [ ] Enforce Chatwoot Idempotency - Unique index on orders table for `(source='chatwoot', external_ref_id)`
 - [ ] Client detail page with full history
 - [ ] Audit logs UI implementation
-- [ ] Client UI for deposits/withdrawals/promo redemption
 
 ### P2 - Medium Priority
-- [ ] Telegram notification integration
+- [ ] Edit Amount feature for Telegram reviewers
 - [ ] Webhook monitoring UI
 - [ ] Game analytics charts
 
@@ -301,4 +301,4 @@ Build a production-grade gaming transaction platform with one central backend th
 ---
 
 ## Last Updated
-January 15, 2026
+January 16, 2026
