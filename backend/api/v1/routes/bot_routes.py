@@ -10,11 +10,13 @@ import uuid
 import json
 import secrets
 import hashlib
+import logging
 
 from ..core.database import fetch_one, fetch_all, execute
 from ..core.config import get_api_settings
 from .dependencies import check_rate_limiting
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bot", tags=["Bot"])
 settings = get_api_settings()
 
