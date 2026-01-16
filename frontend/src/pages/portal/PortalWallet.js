@@ -2,14 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../../context/AuthContext';
+import { API_BASE } from '../../utils/api';
 import PortalLayout from '../../components/PortalLayout';
 import '../../styles/portal-design-system.css';
 import { 
   Wallet, Gift, ArrowDownCircle, Lock, Unlock, Info, Check, AlertCircle,
   Plus, Upload, X, Copy, Clock, CheckCircle, XCircle, RefreshCw, QrCode
 } from 'lucide-react';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
 const PortalWallet = () => {
   const navigate = useNavigate();
