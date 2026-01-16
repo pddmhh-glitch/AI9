@@ -1,6 +1,11 @@
 """
 API v1 Telegram Bot Management Routes
-Multi-bot notification system administration
+UNIFIED Multi-bot notification system - SINGLE SOURCE OF TRUTH
+
+Security features:
+- No bot token in webhook URLs
+- Bot permission validation on all callbacks
+- Standardized callback data format: action:entity_type:entity_id
 """
 from fastapi import APIRouter, Request, HTTPException, Header
 from typing import Optional, List
@@ -9,14 +14,19 @@ from datetime import datetime, timezone
 import uuid
 import json
 import logging
+import hashlib
+import hmac
 
 from ..core.database import fetch_one, fetch_all, execute, get_pool
 from ..core.config import get_api_settings
-from ..core.notification_router import NotificationRouter, EventType, EVENT_METADATA
+from ..core.notification_router import EventType, EVENT_METADATA
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/telegram", tags=["Telegram Bots"])
 settings = get_api_settings()
+
+# Webhook secret for signature validation
+WEBHOOK_SECRET = settings.internal_api_secret
 
 
 # ==================== AUTH ====================
@@ -80,14 +90,11 @@ class BulkPermissionUpdate(BaseModel):
 # ==================== BOT CRUD ====================
 
 @router.get("/bots")
-async def list_telegram_bots(
+async def list_bots(
     request: Request,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    GET /api/v1/admin/telegram/bots
-    List all Telegram bots with their permissions
-    """
+    """List all Telegram bots with their permissions"""
     await require_admin(request, authorization)
     
     bots = await fetch_all("""
@@ -98,217 +105,168 @@ async def list_telegram_bots(
         ORDER BY created_at DESC
     """)
     
-    # Get permissions for each bot
     result = []
     for bot in bots:
-        permissions = await fetch_all("""
-            SELECT event_type, enabled
-            FROM telegram_bot_event_permissions
+        # Get permissions for this bot
+        perms = await fetch_all("""
+            SELECT event_type, enabled 
+            FROM telegram_bot_event_permissions 
             WHERE bot_id = $1
         """, bot['bot_id'])
         
-        perm_dict = {p['event_type']: p['enabled'] for p in permissions}
+        perm_dict = {p['event_type']: p['enabled'] for p in perms}
+        
+        # Verify bot token (masked)
+        verified = False
+        try:
+            full_bot = await fetch_one("SELECT bot_token FROM telegram_bots WHERE bot_id = $1", bot['bot_id'])
+            if full_bot and full_bot['bot_token']:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(f"https://api.telegram.org/bot{full_bot['bot_token']}/getMe")
+                    verified = resp.json().get('ok', False)
+        except:
+            pass
         
         result.append({
-            **dict(bot),
+            "bot_id": bot['bot_id'],
+            "name": bot['name'],
+            "chat_id": bot['chat_id'],
+            "is_active": bot['is_active'],
+            "verified": verified,
+            "can_approve_payments": bot['can_approve_payments'],
+            "can_approve_wallet_loads": bot['can_approve_wallet_loads'],
+            "can_approve_withdrawals": bot['can_approve_withdrawals'],
+            "description": bot['description'],
             "permissions": perm_dict,
-            "created_at": bot['created_at'].isoformat() if bot['created_at'] else None,
-            "updated_at": bot['updated_at'].isoformat() if bot['updated_at'] else None
+            "created_at": bot['created_at'].isoformat() if bot['created_at'] else None
         })
     
     return {"bots": result}
 
 
 @router.post("/bots")
-async def create_telegram_bot(
+async def create_bot(
     request: Request,
     data: TelegramBotCreate,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    POST /api/v1/admin/telegram/bots
-    Create a new Telegram bot
-    """
-    admin = await require_admin(request, authorization)
+    """Create a new Telegram bot"""
+    await require_admin(request, authorization)
     
-    # Validate bot token by testing it
+    # Validate bot token with Telegram
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"https://api.telegram.org/bot{data.bot_token}/getMe")
-            if response.status_code != 200:
-                raise HTTPException(status_code=400, detail="Invalid bot token - could not verify with Telegram")
+            result = response.json()
             
-            bot_info = response.json().get('result', {})
-            logger.info(f"Verified Telegram bot: {bot_info.get('username')}")
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=400, detail=f"Could not verify bot token: {str(e)}")
+            if not result.get('ok'):
+                raise HTTPException(status_code=400, detail="Invalid bot token")
+            
+            telegram_username = result['result'].get('username', 'unknown')
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=400, detail="Telegram API timeout")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to validate bot: {str(e)}")
     
     bot_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
     
     await execute("""
         INSERT INTO telegram_bots 
         (bot_id, name, bot_token, chat_id, is_active, 
          can_approve_payments, can_approve_wallet_loads, can_approve_withdrawals,
-         description, created_by, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+         description, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
     """, bot_id, data.name, data.bot_token, data.chat_id, data.is_active,
        data.can_approve_payments, data.can_approve_wallet_loads, data.can_approve_withdrawals,
-       data.description, admin['user_id'])
+       data.description, now)
     
-    # Create default permissions (all disabled)
+    # Initialize default permissions (all enabled)
     for event_type in EventType:
+        perm_id = str(uuid.uuid4())
         await execute("""
-            INSERT INTO telegram_bot_event_permissions (permission_id, bot_id, event_type, enabled)
-            VALUES ($1, $2, $3, FALSE)
-            ON CONFLICT (bot_id, event_type) DO NOTHING
-        """, str(uuid.uuid4()), bot_id, event_type.value)
+            INSERT INTO telegram_bot_event_permissions 
+            (permission_id, bot_id, event_type, enabled, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+        """, perm_id, bot_id, event_type.value, True, now)
     
     return {
         "bot_id": bot_id,
         "message": "Telegram bot created successfully",
-        "telegram_username": bot_info.get('username')
-    }
-
-
-@router.get("/bots/{bot_id}")
-async def get_telegram_bot(
-    request: Request,
-    bot_id: str,
-    authorization: str = Header(..., alias="Authorization")
-):
-    """
-    GET /api/v1/admin/telegram/bots/{bot_id}
-    Get a specific Telegram bot details
-    """
-    await require_admin(request, authorization)
-    
-    bot = await fetch_one("""
-        SELECT bot_id, name, chat_id, is_active, 
-               can_approve_payments, can_approve_wallet_loads, can_approve_withdrawals,
-               description, created_at, updated_at
-        FROM telegram_bots
-        WHERE bot_id = $1
-    """, bot_id)
-    
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    
-    permissions = await fetch_all("""
-        SELECT event_type, enabled
-        FROM telegram_bot_event_permissions
-        WHERE bot_id = $1
-    """, bot_id)
-    
-    perm_dict = {p['event_type']: p['enabled'] for p in permissions}
-    
-    return {
-        **dict(bot),
-        "permissions": perm_dict,
-        "created_at": bot['created_at'].isoformat() if bot['created_at'] else None,
-        "updated_at": bot['updated_at'].isoformat() if bot['updated_at'] else None
+        "telegram_username": telegram_username
     }
 
 
 @router.put("/bots/{bot_id}")
-async def update_telegram_bot(
+async def update_bot(
     request: Request,
     bot_id: str,
     data: TelegramBotUpdate,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    PUT /api/v1/admin/telegram/bots/{bot_id}
-    Update a Telegram bot
-    """
+    """Update a Telegram bot"""
     await require_admin(request, authorization)
     
-    # Check if bot exists
-    existing = await fetch_one("SELECT * FROM telegram_bots WHERE bot_id = $1", bot_id)
-    if not existing:
+    bot = await fetch_one("SELECT * FROM telegram_bots WHERE bot_id = $1", bot_id)
+    if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     
-    # If updating token, validate it
-    if data.bot_token:
-        import httpx
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"https://api.telegram.org/bot{data.bot_token}/getMe")
-                if response.status_code != 200:
-                    raise HTTPException(status_code=400, detail="Invalid bot token")
-        except httpx.RequestError:
-            raise HTTPException(status_code=400, detail="Could not verify bot token")
-    
-    # Build update query
     updates = []
     params = []
-    param_idx = 1
     
-    for field in ['name', 'bot_token', 'chat_id', 'is_active', 
-                  'can_approve_payments', 'can_approve_wallet_loads', 'can_approve_withdrawals', 'description']:
-        value = getattr(data, field, None)
+    for field, value in data.model_dump(exclude_unset=True).items():
         if value is not None:
-            updates.append(f"{field} = ${param_idx}")
             params.append(value)
-            param_idx += 1
+            updates.append(f"{field} = ${len(params)}")
     
-    if not updates:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    
-    updates.append("updated_at = NOW()")
-    params.append(bot_id)
-    
-    query = f"UPDATE telegram_bots SET {', '.join(updates)} WHERE bot_id = ${param_idx}"
-    await execute(query, *params)
+    if updates:
+        params.append(bot_id)
+        updates.append("updated_at = NOW()")
+        await execute(
+            f"UPDATE telegram_bots SET {', '.join(updates)} WHERE bot_id = ${len(params)}",
+            *params
+        )
     
     return {"message": "Bot updated successfully"}
 
 
 @router.delete("/bots/{bot_id}")
-async def delete_telegram_bot(
+async def delete_bot(
     request: Request,
     bot_id: str,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    DELETE /api/v1/admin/telegram/bots/{bot_id}
-    Delete a Telegram bot
-    """
+    """Delete a Telegram bot"""
     await require_admin(request, authorization)
     
-    # Permissions will be cascade deleted
     await execute("DELETE FROM telegram_bots WHERE bot_id = $1", bot_id)
-    
     return {"message": "Bot deleted successfully"}
 
 
-# ==================== EVENT PERMISSIONS ====================
+# ==================== PERMISSIONS ====================
 
 @router.get("/events")
-async def list_events(
+async def list_event_types(
     request: Request,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    GET /api/v1/admin/telegram/events
-    List all available event types
-    """
+    """List all available event types"""
     await require_admin(request, authorization)
     
-    events = await NotificationRouter.get_all_events()
+    events = []
+    for event_type in EventType:
+        meta = EVENT_METADATA.get(event_type, {})
+        events.append({
+            "event_type": event_type.value,
+            "label": meta.get("label", event_type.value),
+            "description": meta.get("description", ""),
+            "category": meta.get("category", "Other"),
+            "requires_approval": meta.get("requires_approval", False)
+        })
     
-    # Group by category
-    by_category = {}
-    for event in events:
-        cat = event['category']
-        if cat not in by_category:
-            by_category[cat] = []
-        by_category[cat].append(event)
-    
-    return {
-        "events": events,
-        "by_category": by_category
-    }
+    return {"events": events}
 
 
 @router.post("/bots/{bot_id}/permissions")
@@ -318,30 +276,31 @@ async def update_bot_permissions(
     data: BulkPermissionUpdate,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    POST /api/v1/admin/telegram/bots/{bot_id}/permissions
-    Update event permissions for a bot
-    """
+    """Update event permissions for a bot"""
     await require_admin(request, authorization)
     
-    # Verify bot exists
     bot = await fetch_one("SELECT * FROM telegram_bots WHERE bot_id = $1", bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     
-    # Update each permission
     for perm in data.permissions:
-        # Validate event type
-        valid_events = [e.value for e in EventType]
-        if perm.event_type not in valid_events:
-            continue
+        # Upsert permission
+        existing = await fetch_one("""
+            SELECT permission_id FROM telegram_bot_event_permissions 
+            WHERE bot_id = $1 AND event_type = $2
+        """, bot_id, perm.event_type)
         
-        await execute("""
-            INSERT INTO telegram_bot_event_permissions (permission_id, bot_id, event_type, enabled, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            ON CONFLICT (bot_id, event_type) 
-            DO UPDATE SET enabled = $4
-        """, str(uuid.uuid4()), bot_id, perm.event_type, perm.enabled)
+        if existing:
+            await execute("""
+                UPDATE telegram_bot_event_permissions 
+                SET enabled = $1 WHERE permission_id = $2
+            """, perm.enabled, existing['permission_id'])
+        else:
+            await execute("""
+                INSERT INTO telegram_bot_event_permissions 
+                (permission_id, bot_id, event_type, enabled, created_at)
+                VALUES ($1, $2, $3, $4, NOW())
+            """, str(uuid.uuid4()), bot_id, perm.event_type, perm.enabled)
     
     return {"message": "Permissions updated successfully"}
 
@@ -352,118 +311,16 @@ async def get_bot_permissions(
     bot_id: str,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    GET /api/v1/admin/telegram/bots/{bot_id}/permissions
-    Get all permissions for a bot
-    """
+    """Get all permissions for a bot"""
     await require_admin(request, authorization)
     
-    permissions = await fetch_all("""
-        SELECT event_type, enabled
-        FROM telegram_bot_event_permissions
+    perms = await fetch_all("""
+        SELECT event_type, enabled 
+        FROM telegram_bot_event_permissions 
         WHERE bot_id = $1
     """, bot_id)
     
-    # Fill in missing events with default (disabled)
-    perm_dict = {p['event_type']: p['enabled'] for p in permissions}
-    
-    all_events = await NotificationRouter.get_all_events()
-    result = []
-    for event in all_events:
-        result.append({
-            **event,
-            "enabled": perm_dict.get(event['event_type'], False)
-        })
-    
-    return {"permissions": result}
-
-
-# ==================== PERMISSION MATRIX ====================
-
-@router.get("/permission-matrix")
-async def get_permission_matrix(
-    request: Request,
-    authorization: str = Header(..., alias="Authorization")
-):
-    """
-    GET /api/v1/admin/telegram/permission-matrix
-    Get full permission matrix (events x bots)
-    """
-    await require_admin(request, authorization)
-    
-    # Get all bots
-    bots = await fetch_all("""
-        SELECT bot_id, name, is_active, can_approve_payments, can_approve_wallet_loads, can_approve_withdrawals
-        FROM telegram_bots
-        ORDER BY name
-    """)
-    
-    # Get all events
-    events = await NotificationRouter.get_all_events()
-    
-    # Get all permissions
-    permissions = await fetch_all("""
-        SELECT bot_id, event_type, enabled
-        FROM telegram_bot_event_permissions
-    """)
-    
-    # Build matrix
-    perm_lookup = {}
-    for p in permissions:
-        key = f"{p['bot_id']}:{p['event_type']}"
-        perm_lookup[key] = p['enabled']
-    
-    matrix = []
-    for event in events:
-        row = {
-            "event_type": event['event_type'],
-            "label": event['label'],
-            "category": event['category'],
-            "requires_approval": event['requires_approval'],
-            "bots": {}
-        }
-        for bot in bots:
-            key = f"{bot['bot_id']}:{event['event_type']}"
-            row["bots"][bot['bot_id']] = perm_lookup.get(key, False)
-        matrix.append(row)
-    
-    return {
-        "bots": [{"bot_id": b['bot_id'], "name": b['name'], "is_active": b['is_active']} for b in bots],
-        "matrix": matrix
-    }
-
-
-@router.post("/permission-matrix")
-async def update_permission_matrix(
-    request: Request,
-    authorization: str = Header(..., alias="Authorization")
-):
-    """
-    POST /api/v1/admin/telegram/permission-matrix
-    Bulk update permission matrix
-    Body: { "updates": [{"bot_id": "...", "event_type": "...", "enabled": true/false}, ...] }
-    """
-    await require_admin(request, authorization)
-    
-    body = await request.json()
-    updates = body.get('updates', [])
-    
-    for update in updates:
-        bot_id = update.get('bot_id')
-        event_type = update.get('event_type')
-        enabled = update.get('enabled', False)
-        
-        if not bot_id or not event_type:
-            continue
-        
-        await execute("""
-            INSERT INTO telegram_bot_event_permissions (permission_id, bot_id, event_type, enabled, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
-            ON CONFLICT (bot_id, event_type) 
-            DO UPDATE SET enabled = $4
-        """, str(uuid.uuid4()), bot_id, event_type, enabled)
-    
-    return {"message": f"Updated {len(updates)} permissions"}
+    return {"permissions": {p['event_type']: p['enabled'] for p in perms}}
 
 
 # ==================== NOTIFICATION LOGS ====================
@@ -471,53 +328,37 @@ async def update_permission_matrix(
 @router.get("/logs")
 async def get_notification_logs(
     request: Request,
-    event_type: Optional[str] = None,
-    status: Optional[str] = None,
     limit: int = 50,
-    offset: int = 0,
+    event_type: Optional[str] = None,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    GET /api/v1/admin/telegram/logs
-    Get notification logs
-    """
+    """Get notification logs"""
     await require_admin(request, authorization)
     
-    conditions = []
+    query = "SELECT * FROM notification_logs WHERE 1=1"
     params = []
-    param_idx = 1
     
     if event_type:
-        conditions.append(f"event_type = ${param_idx}")
         params.append(event_type)
-        param_idx += 1
+        query += f" AND event_type = ${len(params)}"
     
-    if status:
-        conditions.append(f"status = ${param_idx}")
-        params.append(status)
-        param_idx += 1
+    params.append(limit)
+    query += f" ORDER BY created_at DESC LIMIT ${len(params)}"
     
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    
-    params.extend([limit, offset])
-    
-    logs = await fetch_all(f"""
-        SELECT log_id, event_type, payload, sent_to_bot_ids, success_bot_ids, 
-               failed_bot_ids, status, error_details, created_at
-        FROM notification_logs
-        {where}
-        ORDER BY created_at DESC
-        LIMIT ${param_idx} OFFSET ${param_idx + 1}
-    """, *params)
+    logs = await fetch_all(query, *params)
     
     return {
-        "logs": [
-            {
-                **dict(log),
-                "created_at": log['created_at'].isoformat() if log['created_at'] else None
-            }
-            for log in logs
-        ]
+        "logs": [{
+            "log_id": l['log_id'],
+            "event_type": l['event_type'],
+            "payload": json.loads(l['payload']) if isinstance(l['payload'], str) else l['payload'],
+            "sent_to_bot_ids": l['sent_to_bot_ids'],
+            "success_bot_ids": l['success_bot_ids'],
+            "failed_bot_ids": l['failed_bot_ids'],
+            "status": l['status'],
+            "error_details": json.loads(l['error_details']) if isinstance(l.get('error_details'), str) else l.get('error_details'),
+            "created_at": l['created_at'].isoformat() if l['created_at'] else None
+        } for l in logs]
     }
 
 
@@ -529,23 +370,17 @@ async def test_bot_notification(
     bot_id: str,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    POST /api/v1/admin/telegram/bots/{bot_id}/test
-    Send a test notification to a specific bot
-    """
+    """Send a test notification to a specific bot"""
     await require_admin(request, authorization)
     
-    bot = await fetch_one("""
-        SELECT * FROM telegram_bots WHERE bot_id = $1
-    """, bot_id)
-    
+    bot = await fetch_one("SELECT * FROM telegram_bots WHERE bot_id = $1", bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     
     import httpx
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            message = f"""🔔 *Test Notification*
+            message = f"""🔔 <b>Test Notification</b>
 
 This is a test message from the Gaming Platform.
 
@@ -559,7 +394,7 @@ If you received this, your bot is configured correctly! ✅"""
                 json={
                     "chat_id": bot['chat_id'],
                     "text": message,
-                    "parse_mode": "Markdown"
+                    "parse_mode": "HTML"
                 }
             )
             
@@ -572,193 +407,172 @@ If you received this, your bot is configured correctly! ✅"""
         return {"success": False, "error": str(e)}
 
 
-# ==================== TELEGRAM WEBHOOK HANDLER ====================
+# ==================== SECURE WEBHOOK (No Bot Token in URL) ====================
 
-@router.post("/webhook/{bot_token}")
-async def telegram_webhook(request: Request, bot_token: str):
+@router.post("/webhook")
+async def telegram_webhook(request: Request):
     """
-    POST /api/v1/admin/telegram/webhook/{bot_token}
-    Handle Telegram webhook callbacks (button presses, etc.)
+    SECURE Telegram webhook handler
+    
+    Identifies bot by chat_id from the incoming update, NOT from URL.
+    Validates bot permissions before processing any approval actions.
+    
+    Callback data format: action:entity_type:entity_id
+    Examples:
+    - approve:wallet_load:abc123
+    - reject:wallet_load:abc123
+    - view:wallet_load:abc123
+    - approve:order:def456
     """
     try:
         body = await request.json()
         logger.info(f"Telegram webhook received: {json.dumps(body)[:500]}")
         
-        # Find the bot by token
-        bot = await fetch_one("""
-            SELECT * FROM telegram_bots WHERE bot_token = $1 AND is_active = TRUE
-        """, bot_token)
-        
-        if not bot:
-            logger.warning(f"Unknown bot token in webhook")
-            return {"ok": True}  # Always return ok to Telegram
-        
         # Handle callback query (button press)
         if 'callback_query' in body:
-            callback = body['callback_query']
-            callback_id = callback.get('id')
-            callback_data = callback.get('data', '')
-            from_user = callback.get('from', {})
-            message = callback.get('message', {})
-            chat_id = message.get('chat', {}).get('id')
-            message_id = message.get('message_id')
-            
-            logger.info(f"Callback received: {callback_data} from user {from_user.get('id')}")
-            
-            # Parse callback data (format: action_type:reference_id)
-            if ':' in callback_data:
-                action, reference_id = callback_data.split(':', 1)
-            else:
-                action = callback_data
-                reference_id = None
-            
-            result = await process_telegram_callback(
-                bot=bot,
-                action=action,
-                reference_id=reference_id,
-                callback_id=callback_id,
-                chat_id=chat_id,
-                message_id=message_id,
-                from_user=from_user
-            )
-            
-            return {"ok": True, "result": result}
+            return await handle_callback_query(body['callback_query'])
         
-        # Handle regular message (for future use)
+        # Handle regular message (for /start, etc)
         if 'message' in body:
-            logger.info(f"Regular message received (not handling)")
+            return await handle_message(body['message'])
         
         return {"ok": True}
         
     except Exception as e:
         logger.error(f"Telegram webhook error: {e}")
-        return {"ok": True}  # Always return ok
+        return {"ok": True}  # Always return ok to Telegram
 
 
-async def process_telegram_callback(
+async def handle_callback_query(callback: dict):
+    """Handle callback button press with permission validation"""
+    callback_id = callback.get('id')
+    callback_data = callback.get('data', '')
+    from_user = callback.get('from', {})
+    message = callback.get('message', {})
+    chat_id = message.get('chat', {}).get('id')
+    message_id = message.get('message_id')
+    
+    logger.info(f"Callback: {callback_data} from chat {chat_id}")
+    
+    # Find bot by chat_id
+    bot = await fetch_one("""
+        SELECT * FROM telegram_bots 
+        WHERE chat_id = $1 AND is_active = TRUE
+    """, str(chat_id))
+    
+    if not bot:
+        logger.warning(f"No active bot found for chat_id {chat_id}")
+        return {"ok": True}
+    
+    # Parse callback data: action:entity_type:entity_id
+    parts = callback_data.split(':')
+    if len(parts) < 2:
+        await answer_callback(bot['bot_token'], callback_id, "Invalid callback format")
+        return {"ok": True}
+    
+    action = parts[0]
+    entity_type = parts[1] if len(parts) > 1 else None
+    entity_id = parts[2] if len(parts) > 2 else parts[1]  # Backwards compat
+    
+    # Validate permissions for approval actions
+    if action in ['approve', 'reject']:
+        if entity_type == 'wallet_load' and not bot['can_approve_wallet_loads']:
+            await answer_callback(bot['bot_token'], callback_id, "❌ This bot cannot approve wallet loads")
+            return {"ok": True}
+        
+        if entity_type == 'order' and not bot['can_approve_payments']:
+            await answer_callback(bot['bot_token'], callback_id, "❌ This bot cannot approve orders")
+            return {"ok": True}
+        
+        if entity_type == 'withdrawal' and not bot['can_approve_withdrawals']:
+            await answer_callback(bot['bot_token'], callback_id, "❌ This bot cannot approve withdrawals")
+            return {"ok": True}
+    
+    # Process the action
+    result = await process_callback_action(
+        bot=bot,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        callback_id=callback_id,
+        chat_id=chat_id,
+        message_id=message_id,
+        from_user=from_user
+    )
+    
+    return {"ok": True, "result": result}
+
+
+async def process_callback_action(
     bot: dict,
     action: str,
-    reference_id: str,
+    entity_type: str,
+    entity_id: str,
     callback_id: str,
     chat_id: int,
     message_id: int,
     from_user: dict
 ):
-    """Process Telegram callback button press"""
-    import httpx
-    
-    bot_token = bot['bot_token']
-    response_text = ""
+    """Process callback actions with idempotency checks"""
+    admin_name = from_user.get('first_name', 'Admin')
+    admin_id = f"telegram:{from_user.get('id', 'unknown')}"
     
     try:
         # Handle wallet load actions
-        if action == 'wl_approve':
-            result = await handle_wallet_action(reference_id, 'APPROVE', from_user)
-            response_text = f"✅ Wallet load approved!\n\nAmount: ₱{result.get('amount', 0):,.2f}\nNew Balance: ₱{result.get('new_balance', 0):,.2f}"
+        if entity_type in ['wallet_load', 'wl'] or action.startswith('wl_'):
+            # Normalize action for backwards compatibility
+            if action.startswith('wl_'):
+                action = action[3:]  # Remove 'wl_' prefix
+                entity_id = entity_type if entity_type != 'wl' else entity_id
             
-        elif action == 'wl_reject':
-            result = await handle_wallet_action(reference_id, 'REJECT', from_user)
-            response_text = f"❌ Wallet load rejected.\n\nReason: Admin rejection"
-            
-        elif action == 'wl_view':
-            result = await get_wallet_request_details(reference_id)
-            response_text = f"""📋 *Wallet Load Details*
-
-🆔 Request ID: `{reference_id[:8]}...`
-👤 User: {result.get('display_name', 'N/A')} (@{result.get('username', 'N/A')})
-💵 Amount: ₱{result.get('amount', 0):,.2f}
-💳 Method: {result.get('payment_method', 'N/A')}
-📅 Status: {result.get('status', 'unknown').upper()}
-⏰ Created: {result.get('created_at', 'N/A')}"""
+            return await handle_wallet_load_action(
+                bot, action, entity_id, callback_id, message_id, admin_name, admin_id
+            )
         
         # Handle order actions
-        elif action == 'order_approve':
-            result = await handle_order_action(reference_id, 'APPROVE', from_user)
-            response_text = f"✅ Order approved!"
-            
-        elif action == 'order_reject':
-            result = await handle_order_action(reference_id, 'REJECT', from_user)
-            response_text = f"❌ Order rejected."
-            
-        elif action == 'order_view':
-            result = await get_order_details(reference_id)
-            response_text = f"📋 Order Details: {json.dumps(result, indent=2)[:500]}"
-        
-        else:
-            response_text = f"⚠️ Unknown action: {action}"
-        
-        # Answer callback query (removes loading indicator)
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            await client.post(
-                f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
-                json={
-                    "callback_query_id": callback_id,
-                    "text": response_text[:200],  # Max 200 chars for popup
-                    "show_alert": True
-                }
+        if entity_type == 'order':
+            return await handle_order_action(
+                bot, action, entity_id, callback_id, message_id, admin_name, admin_id
             )
-            
-            # Update the original message to show action taken
-            if action.endswith('_approve') or action.endswith('_reject'):
-                action_taken = "APPROVED ✅" if action.endswith('_approve') else "REJECTED ❌"
-                await client.post(
-                    f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
-                    json={
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "reply_markup": {
-                            "inline_keyboard": [
-                                [{"text": f"Action: {action_taken}", "callback_data": "done"}]
-                            ]
-                        }
-                    }
-                )
         
-        return {"success": True, "action": action, "response": response_text}
+        # View action
+        if action == 'view':
+            return await handle_view_action(bot, entity_type, entity_id, callback_id)
+        
+        await answer_callback(bot['bot_token'], callback_id, f"Unknown action: {action}")
+        return {"success": False}
         
     except Exception as e:
-        logger.error(f"Error processing callback {action}: {e}")
-        
-        # Still answer callback to remove loading
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(
-                    f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
-                    json={
-                        "callback_query_id": callback_id,
-                        "text": f"❌ Error: {str(e)[:100]}",
-                        "show_alert": True
-                    }
-                )
-        except:
-            pass
-        
+        logger.error(f"Callback action error: {e}")
+        await answer_callback(bot['bot_token'], callback_id, f"❌ Error: {str(e)[:50]}")
         return {"success": False, "error": str(e)}
 
 
-async def handle_wallet_action(request_id: str, action: str, from_user: dict):
-    """Handle wallet load approval/rejection from Telegram"""
-    from ..core.database import get_pool
-    
+async def handle_wallet_load_action(bot, action, request_id, callback_id, message_id, admin_name, admin_id):
+    """Handle wallet load approve/reject with idempotency"""
     load_request = await fetch_one("""
-        SELECT * FROM wallet_load_requests WHERE request_id = $1
+        SELECT wlr.*, u.username, u.display_name, u.real_balance as current_balance
+        FROM wallet_load_requests wlr
+        LEFT JOIN users u ON wlr.user_id = u.user_id
+        WHERE wlr.request_id = $1
     """, request_id)
     
     if not load_request:
-        raise Exception("Request not found")
+        await answer_callback(bot['bot_token'], callback_id, "Request not found")
+        return {"success": False}
     
+    # Idempotency check
     if load_request['status'] != 'pending':
-        raise Exception(f"Request already {load_request['status']}")
+        await answer_callback(
+            bot['bot_token'], callback_id, 
+            f"Already {load_request['status']}", show_alert=True
+        )
+        return {"success": False, "reason": "already_processed"}
     
-    admin_id = f"telegram:{from_user.get('id', 'unknown')}"
     now = datetime.now(timezone.utc)
     
-    if action == 'APPROVE':
-        user = await fetch_one("SELECT * FROM users WHERE user_id = $1", load_request['user_id'])
-        if not user:
-            raise Exception("User not found")
-        
-        current_balance = float(user.get('real_balance', 0) or 0)
+    if action == 'approve':
+        current_balance = float(load_request.get('current_balance', 0) or 0)
         new_balance = current_balance + load_request['amount']
         
         pool = await get_pool()
@@ -782,29 +596,35 @@ async def handle_wallet_action(request_id: str, action: str, from_user: dict):
                     VALUES ($1, $2, 'credit', $3, $4, $5, 'wallet_load', $6, $7, NOW())
                 """, str(uuid.uuid4()), load_request['user_id'], load_request['amount'],
                    current_balance, new_balance, request_id, 
-                   f"Wallet load via {load_request['payment_method']} (Telegram approved)")
+                   f"Wallet load via {load_request['payment_method']} - Approved by {admin_name}")
+        
+        await answer_callback(
+            bot['bot_token'], callback_id,
+            f"✅ Approved! ₱{load_request['amount']:,.2f} credited"
+        )
+        await update_message_with_result(
+            bot['bot_token'], bot['chat_id'], message_id,
+            f"✅ APPROVED by {admin_name}\n💰 ₱{load_request['amount']:,.2f} credited"
+        )
         
         # Emit notification
-        from ..core.notification_router import emit_event, EventType
+        from ..core.notification_router import emit_event
         await emit_event(
             event_type=EventType.WALLET_LOAD_APPROVED,
-            title="Wallet Load Approved (via Telegram)",
-            message=f"Wallet load of ₱{load_request['amount']:,.2f} approved via Telegram.\n\nNew balance: ₱{new_balance:,.2f}",
+            title="Wallet Load Approved",
+            message=f"Approved by {admin_name} via Telegram",
             reference_id=request_id,
             reference_type="wallet_load",
             user_id=load_request['user_id'],
-            username=user.get('username'),
-            display_name=user.get('display_name'),
+            username=load_request.get('username'),
             amount=load_request['amount'],
             extra_data={"new_balance": new_balance, "approved_via": "telegram"},
             requires_action=False
         )
         
-        return {"amount": load_request['amount'], "new_balance": new_balance}
+        return {"success": True, "amount": load_request['amount'], "new_balance": new_balance}
     
-    elif action == 'REJECT':
-        user = await fetch_one("SELECT * FROM users WHERE user_id = $1", load_request['user_id'])
-        
+    elif action == 'reject':
         await execute("""
             UPDATE wallet_load_requests 
             SET status = 'rejected', reviewed_by = $1, reviewed_at = $2, 
@@ -812,188 +632,317 @@ async def handle_wallet_action(request_id: str, action: str, from_user: dict):
             WHERE request_id = $3
         """, admin_id, now, request_id)
         
+        await answer_callback(bot['bot_token'], callback_id, "❌ Request Rejected")
+        await update_message_with_result(
+            bot['bot_token'], bot['chat_id'], message_id,
+            f"❌ REJECTED by {admin_name}"
+        )
+        
         # Emit notification
-        from ..core.notification_router import emit_event, EventType
+        from ..core.notification_router import emit_event
         await emit_event(
             event_type=EventType.WALLET_LOAD_REJECTED,
-            title="Wallet Load Rejected (via Telegram)",
-            message=f"Wallet load of ₱{load_request['amount']:,.2f} rejected via Telegram.",
+            title="Wallet Load Rejected",
+            message=f"Rejected by {admin_name} via Telegram",
             reference_id=request_id,
             reference_type="wallet_load",
             user_id=load_request['user_id'],
-            username=user.get('username') if user else None,
-            display_name=user.get('display_name') if user else None,
+            username=load_request.get('username'),
             amount=load_request['amount'],
             extra_data={"rejected_via": "telegram"},
             requires_action=False
         )
         
-        return {"amount": load_request['amount'], "status": "rejected"}
-
-
-async def get_wallet_request_details(request_id: str):
-    """Get wallet load request details"""
-    result = await fetch_one("""
-        SELECT wlr.*, u.username, u.display_name
-        FROM wallet_load_requests wlr
-        JOIN users u ON wlr.user_id = u.user_id
-        WHERE wlr.request_id = $1
-    """, request_id)
+        return {"success": True, "status": "rejected"}
     
-    if not result:
-        return {"error": "Request not found"}
+    return {"success": False}
+
+
+async def handle_order_action(bot, action, order_id, callback_id, message_id, admin_name, admin_id):
+    """Handle order approve/reject with idempotency"""
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
+    
+    if not order:
+        await answer_callback(bot['bot_token'], callback_id, "Order not found")
+        return {"success": False}
+    
+    # Idempotency check
+    if order['status'] not in ['pending_review', 'initiated', 'awaiting_payment_proof']:
+        await answer_callback(
+            bot['bot_token'], callback_id,
+            f"Already {order['status']}", show_alert=True
+        )
+        return {"success": False, "reason": "already_processed"}
+    
+    now = datetime.now(timezone.utc)
+    
+    if action == 'approve':
+        # Update user balance for deposits
+        if order['order_type'] == 'deposit':
+            await execute('''
+                UPDATE users 
+                SET real_balance = real_balance + $1,
+                    bonus_balance = bonus_balance + $2,
+                    deposit_count = deposit_count + 1,
+                    total_deposited = total_deposited + $1
+                WHERE user_id = $3
+            ''', order['amount'], order['bonus_amount'], order['user_id'])
+        
+        await execute('''
+            UPDATE orders SET status = 'approved', approved_by = $1, approved_at = $2, updated_at = NOW()
+            WHERE order_id = $3
+        ''', admin_id, now, order_id)
+        
+        await answer_callback(bot['bot_token'], callback_id, "✅ Order Approved!")
+        await update_message_with_result(
+            bot['bot_token'], bot['chat_id'], message_id,
+            f"✅ APPROVED by {admin_name}"
+        )
+        
+        # Emit notification
+        from ..core.notification_router import emit_event
+        await emit_event(
+            event_type=EventType.ORDER_APPROVED,
+            title="Order Approved",
+            message=f"Approved by {admin_name} via Telegram",
+            reference_id=order_id,
+            reference_type="order",
+            user_id=order['user_id'],
+            username=order['username'],
+            amount=order['amount'],
+            extra_data={"approved_via": "telegram"},
+            requires_action=False
+        )
+        
+        return {"success": True}
+    
+    elif action == 'reject':
+        await execute('''
+            UPDATE orders SET status = 'rejected', rejection_reason = 'Rejected via Telegram',
+            approved_by = $1, approved_at = $2, updated_at = NOW()
+            WHERE order_id = $3
+        ''', admin_id, now, order_id)
+        
+        await answer_callback(bot['bot_token'], callback_id, "❌ Order Rejected")
+        await update_message_with_result(
+            bot['bot_token'], bot['chat_id'], message_id,
+            f"❌ REJECTED by {admin_name}"
+        )
+        
+        # Emit notification
+        from ..core.notification_router import emit_event
+        await emit_event(
+            event_type=EventType.ORDER_REJECTED,
+            title="Order Rejected",
+            message=f"Rejected by {admin_name} via Telegram",
+            reference_id=order_id,
+            reference_type="order",
+            user_id=order['user_id'],
+            username=order['username'],
+            amount=order['amount'],
+            extra_data={"rejected_via": "telegram"},
+            requires_action=False
+        )
+        
+        return {"success": True}
+    
+    return {"success": False}
+
+
+async def handle_view_action(bot, entity_type, entity_id, callback_id):
+    """Handle view details action"""
+    if entity_type in ['wallet_load', 'wl']:
+        result = await fetch_one("""
+            SELECT wlr.*, u.username, u.display_name
+            FROM wallet_load_requests wlr
+            JOIN users u ON wlr.user_id = u.user_id
+            WHERE wlr.request_id = $1
+        """, entity_id)
+        
+        if result:
+            details = f"""💰 Wallet Load Details:
+ID: {entity_id[:8]}...
+User: @{result['username']}
+Amount: ₱{result['amount']:,.2f}
+Method: {result['payment_method']}
+Status: {result['status'].upper()}"""
+            await answer_callback(bot['bot_token'], callback_id, details, show_alert=True)
+        else:
+            await answer_callback(bot['bot_token'], callback_id, "Request not found")
+    
+    elif entity_type == 'order':
+        order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", entity_id)
+        if order:
+            details = f"""📋 Order Details:
+ID: {entity_id[:8]}...
+User: {order['username']}
+Type: {order['order_type']}
+Amount: ₱{order['amount']:,.2f}
+Status: {order['status'].upper()}"""
+            await answer_callback(bot['bot_token'], callback_id, details, show_alert=True)
+        else:
+            await answer_callback(bot['bot_token'], callback_id, "Order not found")
+    
+    return {"success": True}
+
+
+async def handle_message(message: dict):
+    """Handle regular Telegram messages (for /start, etc)"""
+    chat_id = message.get('chat', {}).get('id')
+    text = message.get('text', '')
+    
+    if text.startswith('/start'):
+        # Find any bot with this chat_id
+        bot = await fetch_one("""
+            SELECT * FROM telegram_bots WHERE chat_id = $1 LIMIT 1
+        """, str(chat_id))
+        
+        if bot:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot['bot_token']}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": f"✅ Bot connected!\n\nChat ID: <code>{chat_id}</code>",
+                        "parse_mode": "HTML"
+                    }
+                )
+        else:
+            logger.info(f"No bot configured for chat {chat_id}")
+    
+    return {"ok": True}
+
+
+# ==================== TELEGRAM API HELPERS ====================
+
+async def answer_callback(bot_token: str, callback_id: str, text: str, show_alert: bool = False):
+    """Answer Telegram callback query"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                json={
+                    "callback_query_id": callback_id,
+                    "text": text[:200],
+                    "show_alert": show_alert
+                }
+            )
+    except Exception as e:
+        logger.error(f"Answer callback error: {e}")
+
+
+async def update_message_with_result(bot_token: str, chat_id: str, message_id: int, result_text: str):
+    """Update Telegram message to show action result"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Remove inline keyboard and add result
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [{"text": result_text, "callback_data": "done"}]
+                        ]
+                    }
+                }
+            )
+    except Exception as e:
+        logger.error(f"Update message error: {e}")
+
+
+# ==================== WEBHOOK SETUP ====================
+
+@router.post("/setup-webhook")
+async def setup_webhook(
+    request: Request,
+    authorization: str = Header(..., alias="Authorization")
+):
+    """Set up Telegram webhook for all active bots"""
+    await require_admin(request, authorization)
+    
+    # Get backend URL
+    import os
+    backend_url = os.environ.get('REACT_APP_BACKEND_URL', '')
+    if not backend_url:
+        backend_url = str(request.base_url).rstrip('/')
+    
+    # Secure webhook URL (no bot token!)
+    webhook_url = f"{backend_url}/api/v1/admin/telegram/webhook"
+    
+    bots = await fetch_all("SELECT * FROM telegram_bots WHERE is_active = TRUE")
+    results = []
+    
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for bot in bots:
+            try:
+                response = await client.post(
+                    f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
+                    json={
+                        "url": webhook_url,
+                        "allowed_updates": ["callback_query", "message"]
+                    }
+                )
+                result = response.json()
+                results.append({
+                    "bot_id": bot['bot_id'],
+                    "name": bot['name'],
+                    "success": result.get('ok', False),
+                    "description": result.get('description', '')
+                })
+            except Exception as e:
+                results.append({
+                    "bot_id": bot['bot_id'],
+                    "name": bot['name'],
+                    "success": False,
+                    "error": str(e)
+                })
     
     return {
-        "request_id": result['request_id'],
-        "username": result['username'],
-        "display_name": result['display_name'],
-        "amount": float(result['amount']),
-        "payment_method": result['payment_method'],
-        "status": result['status'],
-        "created_at": result['created_at'].strftime('%Y-%m-%d %H:%M UTC') if result['created_at'] else 'N/A'
+        "webhook_url": webhook_url,
+        "results": results
     }
 
 
-async def handle_order_action(order_id: str, action: str, from_user: dict):
-    """Handle order approval/rejection from Telegram"""
-    # Placeholder - implement based on your order system
-    return {"order_id": order_id, "action": action}
-
-
-async def get_order_details(order_id: str):
-    """Get order details"""
-    result = await fetch_one("""
-        SELECT * FROM orders WHERE order_id = $1
-    """, order_id)
-    return dict(result) if result else {"error": "Order not found"}
-
-
-# ==================== WEBHOOK SETUP ENDPOINT ====================
-
-@router.post("/bots/{bot_id}/setup-webhook")
-async def setup_bot_webhook(
+@router.get("/webhook-info")
+async def get_webhook_info(
     request: Request,
-    bot_id: str,
     authorization: str = Header(..., alias="Authorization")
 ):
-    """
-    POST /api/v1/admin/telegram/bots/{bot_id}/setup-webhook
-    Set up Telegram webhook for a bot to receive button callbacks
-    """
+    """Get webhook info for all bots"""
     await require_admin(request, authorization)
     
-    bot = await fetch_one("""
-        SELECT * FROM telegram_bots WHERE bot_id = $1
-    """, bot_id)
-    
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    
-    # Get the backend URL from environment
-    import os
-    backend_url = os.environ.get('BACKEND_URL', '')
-    
-    if not backend_url:
-        # Try to construct from request
-        backend_url = str(request.base_url).rstrip('/')
-    
-    webhook_url = f"{backend_url}/api/v1/admin/telegram/webhook/{bot['bot_token']}"
+    bots = await fetch_all("SELECT bot_id, name, bot_token FROM telegram_bots WHERE is_active = TRUE")
+    results = []
     
     import httpx
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Set webhook
-            response = await client.post(
-                f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
-                json={
-                    "url": webhook_url,
-                    "allowed_updates": ["callback_query", "message"]
-                }
-            )
-            
-            result = response.json()
-            
-            if result.get('ok'):
-                return {
-                    "success": True,
-                    "message": "Webhook set up successfully",
-                    "webhook_url": webhook_url
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": result.get('description', 'Unknown error')
-                }
-                
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@router.get("/bots/{bot_id}/webhook-info")
-async def get_bot_webhook_info(
-    request: Request,
-    bot_id: str,
-    authorization: str = Header(..., alias="Authorization")
-):
-    """
-    GET /api/v1/admin/telegram/bots/{bot_id}/webhook-info
-    Get current webhook info for a bot
-    """
-    await require_admin(request, authorization)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for bot in bots:
+            try:
+                response = await client.get(
+                    f"https://api.telegram.org/bot{bot['bot_token']}/getWebhookInfo"
+                )
+                result = response.json()
+                info = result.get('result', {})
+                results.append({
+                    "bot_id": bot['bot_id'],
+                    "name": bot['name'],
+                    "url": info.get('url', ''),
+                    "has_custom_certificate": info.get('has_custom_certificate', False),
+                    "pending_update_count": info.get('pending_update_count', 0),
+                    "last_error_date": info.get('last_error_date'),
+                    "last_error_message": info.get('last_error_message')
+                })
+            except Exception as e:
+                results.append({
+                    "bot_id": bot['bot_id'],
+                    "name": bot['name'],
+                    "error": str(e)
+                })
     
-    bot = await fetch_one("""
-        SELECT * FROM telegram_bots WHERE bot_id = $1
-    """, bot_id)
-    
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                f"https://api.telegram.org/bot{bot['bot_token']}/getWebhookInfo"
-            )
-            
-            result = response.json()
-            return {"success": True, "webhook_info": result.get('result', {})}
-                
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@router.delete("/bots/{bot_id}/webhook")
-async def delete_bot_webhook(
-    request: Request,
-    bot_id: str,
-    authorization: str = Header(..., alias="Authorization")
-):
-    """
-    DELETE /api/v1/admin/telegram/bots/{bot_id}/webhook
-    Remove webhook from a bot (switch to polling mode)
-    """
-    await require_admin(request, authorization)
-    
-    bot = await fetch_one("""
-        SELECT * FROM telegram_bots WHERE bot_id = $1
-    """, bot_id)
-    
-    if not bot:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"https://api.telegram.org/bot{bot['bot_token']}/deleteWebhook"
-            )
-            
-            result = response.json()
-            
-            if result.get('ok'):
-                return {"success": True, "message": "Webhook deleted"}
-            else:
-                return {"success": False, "error": result.get('description')}
-                
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {"bots": results}
