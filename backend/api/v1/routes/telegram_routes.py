@@ -552,102 +552,58 @@ async def process_callback_action(
 
 
 async def handle_wallet_load_action(bot, action, request_id, callback_id, message_id, admin_name, admin_id):
-    """Handle wallet load approve/reject with idempotency"""
-    load_request = await fetch_one("""
-        SELECT wlr.*, u.username, u.display_name, u.real_balance as current_balance
-        FROM wallet_load_requests wlr
-        LEFT JOIN users u ON wlr.user_id = u.user_id
-        WHERE wlr.request_id = $1
-    """, request_id)
-    
-    if not load_request:
-        await answer_callback(bot['bot_token'], callback_id, "Request not found")
-        return {"success": False}
-    
-    # Idempotency check
-    if load_request['status'] != 'pending':
-        await answer_callback(
-            bot['bot_token'], callback_id, 
-            f"Already {load_request['status']}", show_alert=True
-        )
-        return {"success": False, "reason": "already_processed"}
-    
-    now = datetime.now(timezone.utc)
+    """Handle wallet load approve/reject using unified approval service"""
+    from ..core.approval_service import approve_or_reject_wallet_load, ActorType
     
     if action == 'approve':
-        current_balance = float(load_request.get('current_balance', 0) or 0)
-        new_balance = current_balance + load_request['amount']
-        
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("""
-                    UPDATE users SET real_balance = $1, updated_at = NOW()
-                    WHERE user_id = $2
-                """, new_balance, load_request['user_id'])
-                
-                await conn.execute("""
-                    UPDATE wallet_load_requests 
-                    SET status = 'approved', reviewed_by = $1, reviewed_at = $2, updated_at = NOW()
-                    WHERE request_id = $3
-                """, admin_id, now, request_id)
-                
-                await conn.execute("""
-                    INSERT INTO wallet_ledger 
-                    (ledger_id, user_id, transaction_type, amount, balance_before, balance_after,
-                     reference_type, reference_id, description, created_at)
-                    VALUES ($1, $2, 'credit', $3, $4, $5, 'wallet_load', $6, $7, NOW())
-                """, str(uuid.uuid4()), load_request['user_id'], load_request['amount'],
-                   current_balance, new_balance, request_id, 
-                   f"Wallet load via {load_request['payment_method']} - Approved by {admin_name}")
-        
-        await answer_callback(
-            bot['bot_token'], callback_id,
-            f"✅ Approved! ₱{load_request['amount']:,.2f} credited"
-        )
-        await update_message_with_result(
-            bot['bot_token'], bot['chat_id'], message_id,
-            f"✅ APPROVED by {admin_name}\n💰 ₱{load_request['amount']:,.2f} credited"
+        result = await approve_or_reject_wallet_load(
+            request_id=request_id,
+            action="approve",
+            actor_type=ActorType.TELEGRAM_BOT,
+            actor_id=admin_id,
+            bot_id=bot['bot_id']
         )
         
-        # Emit notification
-        from ..core.notification_router import emit_event
-        await emit_event(
-            event_type=EventType.WALLET_LOAD_APPROVED,
-            title="Wallet Load Approved",
-            message=f"Approved by {admin_name} via Telegram",
-            reference_id=request_id,
-            reference_type="wallet_load",
-            user_id=load_request['user_id'],
-            username=load_request.get('username'),
-            amount=load_request['amount'],
-            extra_data={"new_balance": new_balance, "approved_via": "telegram"},
-            requires_action=False
-        )
+        if result.success:
+            await answer_callback(
+                bot['bot_token'], callback_id,
+                f"✅ Approved! ₱{result.data.get('amount', 0):,.2f} credited"
+            )
+            await update_message_with_result(
+                bot['bot_token'], bot['chat_id'], message_id,
+                f"✅ APPROVED by {admin_name}\n💰 ₱{result.data.get('amount', 0):,.2f} credited"
+            )
+        else:
+            already_processed = result.data.get('already_processed', False)
+            await answer_callback(
+                bot['bot_token'], callback_id,
+                result.message, show_alert=already_processed
+            )
         
-        return {"success": True, "amount": load_request['amount'], "new_balance": new_balance}
+        return {"success": result.success, **result.data}
     
     elif action == 'reject':
-        await execute("""
-            UPDATE wallet_load_requests 
-            SET status = 'rejected', reviewed_by = $1, reviewed_at = $2, 
-                rejection_reason = 'Rejected via Telegram', updated_at = NOW()
-            WHERE request_id = $3
-        """, admin_id, now, request_id)
-        
-        await answer_callback(bot['bot_token'], callback_id, "❌ Request Rejected")
-        await update_message_with_result(
-            bot['bot_token'], bot['chat_id'], message_id,
-            f"❌ REJECTED by {admin_name}"
+        result = await approve_or_reject_wallet_load(
+            request_id=request_id,
+            action="reject",
+            actor_type=ActorType.TELEGRAM_BOT,
+            actor_id=admin_id,
+            rejection_reason="Rejected via Telegram",
+            bot_id=bot['bot_id']
         )
         
-        # Emit notification
-        from ..core.notification_router import emit_event
-        await emit_event(
-            event_type=EventType.WALLET_LOAD_REJECTED,
-            title="Wallet Load Rejected",
-            message=f"Rejected by {admin_name} via Telegram",
-            reference_id=request_id,
+        if result.success:
+            await answer_callback(bot['bot_token'], callback_id, "❌ Request Rejected")
+            await update_message_with_result(
+                bot['bot_token'], bot['chat_id'], message_id,
+                f"❌ REJECTED by {admin_name}"
+            )
+        else:
+            await answer_callback(bot['bot_token'], callback_id, result.message, show_alert=True)
+        
+        return {"success": result.success, **result.data}
+    
+    return {"success": False}
             reference_type="wallet_load",
             user_id=load_request['user_id'],
             username=load_request.get('username'),
