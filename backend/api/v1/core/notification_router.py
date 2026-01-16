@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 class EventType(str, Enum):
     """Standardized event types for notification routing"""
     
+    # User Events
+    USER_REGISTERED = "USER_REGISTERED"
+    USER_LOGIN = "USER_LOGIN"
+    
     # Order Events
     ORDER_CREATED = "ORDER_CREATED"
     ORDER_APPROVED = "ORDER_APPROVED"
@@ -53,6 +57,10 @@ class EventType(str, Enum):
     REFERRAL_JOINED = "REFERRAL_JOINED"
     REFERRAL_MILESTONE_REACHED = "REFERRAL_MILESTONE_REACHED"
     REFERRAL_REWARD_GRANTED = "REFERRAL_REWARD_GRANTED"
+    
+    # Promo Code Events
+    PROMO_CODE_REDEEMED = "PROMO_CODE_REDEEMED"
+    PROMO_CODE_CREATED = "PROMO_CODE_CREATED"
     
     # Transaction Events
     TRANSACTION_LOGGED = "TRANSACTION_LOGGED"
