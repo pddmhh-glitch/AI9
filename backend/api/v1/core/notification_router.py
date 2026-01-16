@@ -583,7 +583,8 @@ async def emit_event(
     extra_data: Dict = None,
     image_url: str = None,
     requires_action: bool = False,
-    action_prefix: str = None
+    entity_type: str = None,  # STANDARDIZED: action:entity_type:entity_id
+    action_prefix: str = None  # DEPRECATED: kept for backwards compatibility
 ) -> Dict[str, Any]:
     """
     Convenience function to emit an event
@@ -601,9 +602,15 @@ async def emit_event(
             username=user['username'],
             amount=100.0,
             requires_action=True,
-            action_prefix="wl"
+            entity_type="wallet_load"  # STANDARDIZED FORMAT
         )
+    
+    Callback format: action:entity_type:entity_id
+    Examples: approve:wallet_load:abc123, reject:order:def456
     """
+    # Use entity_type if provided, fall back to reference_type, then action_prefix for backwards compat
+    effective_entity_type = entity_type or reference_type or action_prefix or "item"
+    
     payload = NotificationPayload(
         event_type=event_type,
         title=title,
@@ -618,7 +625,7 @@ async def emit_event(
         image_url=image_url,
         requires_action=requires_action,
         action_data={
-            "action_prefix": action_prefix or "action",
+            "entity_type": effective_entity_type,  # STANDARDIZED
             "reference_id": reference_id
         } if requires_action else None
     )
