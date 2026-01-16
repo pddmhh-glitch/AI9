@@ -5,9 +5,8 @@ import { useAuth } from '../context/AuthContext';
 const PortalRoute = ({ children }) => {
   const { isPortalAuthenticated, loading } = useAuth();
 
-  // For UI demo/preview purposes, allow access without authentication
-  // This enables viewing the redesigned portal UI
-  const DEMO_MODE = true;
+  // DEMO_MODE OFF - require real authentication
+  const DEMO_MODE = false;
 
   if (loading && !DEMO_MODE) {
     return (
