@@ -678,6 +678,7 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
             return {"success": False}
         
         old_amount = order['amount']
+        now = datetime.now(timezone.utc)
         
         # Update order with new amount
         await execute('''
