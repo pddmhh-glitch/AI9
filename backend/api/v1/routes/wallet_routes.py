@@ -203,16 +203,15 @@ async def create_wallet_load_request(
     # Create request
     request_id = str(uuid.uuid4())
     
-    # Store proof image (in production, upload to S3)
-    proof_url = f"data:image/jpeg;base64,{data.proof_image[:100]}...{request_id}"
-    
+    # NO PROOF URL STORED - image forwarded to Telegram only
+    # Store only hash for duplicate detection
     await execute("""
         INSERT INTO wallet_load_requests 
-        (request_id, user_id, amount, payment_method, qr_id, proof_image_url, 
+        (request_id, user_id, amount, payment_method, qr_id, 
          proof_image_hash, status, ip_address, device_fingerprint, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, NOW())
     """, request_id, user['user_id'], data.amount, data.payment_method, 
-       qr['qr_id'], proof_url, proof_hash, client_ip, device_fp)
+       qr['qr_id'], proof_hash, client_ip, device_fp)
     
     # Log audit
     await execute("""
@@ -222,6 +221,7 @@ async def create_wallet_load_request(
        json.dumps({"amount": data.amount, "method": data.payment_method}), client_ip)
     
     # Send notification via NotificationRouter (multi-bot system)
+    # Image forwarded to Telegram but NOT stored in DB
     from ..core.notification_router import emit_event, EventType
     
     await emit_event(
@@ -234,9 +234,12 @@ async def create_wallet_load_request(
         username=user['username'],
         display_name=user.get('display_name'),
         amount=data.amount,
-        extra_data={"payment_method": data.payment_method},
+        extra_data={
+            "payment_method": data.payment_method,
+            "proof_image": data.proof_image  # Forward to Telegram, not stored
+        },
         requires_action=True,
-        action_prefix="wl"
+        entity_type="wallet_load"  # STANDARDIZED: action:wallet_load:request_id
     )
     
     return {
