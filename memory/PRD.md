@@ -10,7 +10,33 @@ Build a production-grade gaming transaction platform with one central backend th
 
 ## Recent Updates (January 16, 2026)
 
-### COMPLETED: Multi-Telegram-Bot Notification System ✅
+### COMPLETED: Centralized Approval Service Refactor ✅
+
+**approval_service.py** (`/app/backend/api/v1/core/approval_service.py`)
+- **SINGLE SOURCE OF TRUTH** for ALL order/wallet approvals
+- Used by: Telegram webhook callbacks, Admin UI approvals
+- Enforces: Idempotency, Bot permissions, Amount adjustment limits, Proper side effects
+
+**Key Functions:**
+- `approve_or_reject_order()` - Handles orders (deposits, game_loads, withdrawals)
+- `approve_or_reject_wallet_load()` - Handles wallet load requests
+
+**Refactored Components:**
+- `telegram_routes.py` - Now uses `approval_service` for all callbacks
+- `admin_routes_v2.py` - `/api/v1/admin/approvals/{order_id}/action` uses `approval_service`
+- `wallet_routes.py` - **REMOVED** legacy `/api/v1/wallet/review` endpoint
+
+**MongoDB Cleanup:**
+- Removed `motor==3.3.1` from requirements.txt
+- Removed `pymongo==4.5.0` from requirements.txt
+- Application is now **100% PostgreSQL**
+
+**Test Results (January 16, 2026):**
+- Backend: 15/15 tests PASSED (100%)
+- Frontend: All pages loading correctly
+- Legacy endpoint `/api/v1/wallet/review` correctly returns 404
+
+---
 
 **NotificationRouter Service** (`/app/backend/api/v1/core/notification_router.py`)
 - Central event emission service
