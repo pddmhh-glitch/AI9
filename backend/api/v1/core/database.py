@@ -338,6 +338,9 @@ async def init_api_v1_db():
             ("play_credits_consumed", "FLOAT DEFAULT 0.0"),
             ("bonus_consumed", "FLOAT DEFAULT 0.0"),
             ("is_suspicious", "BOOLEAN DEFAULT FALSE"),
+            ("amount_adjusted", "BOOLEAN DEFAULT FALSE"),
+            ("adjusted_by", "VARCHAR(100)"),
+            ("adjusted_at", "TIMESTAMPTZ"),
         ]
         for col_name, col_def in order_columns:
             try:
