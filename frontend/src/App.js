@@ -55,7 +55,7 @@ import TelegramBots from './pages/admin/system/TelegramBots';
 // Legacy Admin Pages (for backwards compat)
 import AdminSettings from './pages/admin/AdminSettings';
 import AdminPaymentPanel from './pages/admin/AdminPaymentPanel';
-import AdminTelegramSetup from './pages/admin/AdminTelegramSetup';
+// AdminTelegramSetup REMOVED - use /admin/system/telegram-bots instead
 import AdminPerksPage from './pages/admin/AdminPerksPage';
 import AdminOperationsPanel from './pages/admin/AdminOperationsPanel';
 
