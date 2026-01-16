@@ -511,7 +511,8 @@ async def process_callback_action(
     callback_id: str,
     chat_id: int,
     message_id: int,
-    from_user: dict
+    from_user: dict,
+    extra_value: str = None
 ):
     """Process callback actions with idempotency checks"""
     admin_name = from_user.get('first_name', 'Admin')
@@ -529,10 +530,10 @@ async def process_callback_action(
                 bot, action, entity_id, callback_id, message_id, admin_name, admin_id
             )
         
-        # Handle order actions
+        # Handle order actions (including edit_amount, set_amount)
         if entity_type == 'order':
             return await handle_order_action(
-                bot, action, entity_id, callback_id, message_id, admin_name, admin_id
+                bot, action, entity_id, callback_id, message_id, admin_name, admin_id, extra_value
             )
         
         # View action
