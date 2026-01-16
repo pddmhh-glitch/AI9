@@ -124,10 +124,10 @@ const Login = () => {
 
         <div className="mt-4 p-3 bg-gray-800/50 rounded-lg space-y-1">
           <p className="text-gray-500 text-xs text-center">
-            Admin: <code className="text-emerald-400">admin</code> / <code className="text-emerald-400">admin123</code>
+            Admin: <code className="text-emerald-400">admin</code> / <code className="text-emerald-400">password</code>
           </p>
           <p className="text-gray-500 text-xs text-center">
-            Client: <code className="text-emerald-400">client1</code> / <code className="text-emerald-400">admin123</code>
+            Client: <code className="text-emerald-400">client1</code> / <code className="text-emerald-400">password</code>
           </p>
         </div>
       </div>
