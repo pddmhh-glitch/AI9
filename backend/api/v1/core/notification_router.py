@@ -91,25 +91,37 @@ EVENT_METADATA = {
     },
     EventType.ORDER_CREATED: {
         "label": "Order Created",
-        "description": "New deposit/withdrawal order created",
+        "description": "New game load order created",
+        "category": "Orders",
+        "requires_approval": True
+    },
+    EventType.ORDER_PROOF_SUBMITTED: {
+        "label": "Order Proof Submitted",
+        "description": "Payment proof submitted for order",
         "category": "Orders",
         "requires_approval": True
     },
     EventType.ORDER_APPROVED: {
         "label": "Order Approved",
-        "description": "Order approved by admin",
+        "description": "Order approved by admin/reviewer",
         "category": "Orders",
         "requires_approval": False
     },
     EventType.ORDER_REJECTED: {
         "label": "Order Rejected",
-        "description": "Order rejected by admin",
+        "description": "Order rejected by admin/reviewer",
+        "category": "Orders",
+        "requires_approval": False
+    },
+    EventType.ORDER_AMOUNT_ADJUSTED: {
+        "label": "Order Amount Adjusted",
+        "description": "Order amount edited before approval",
         "category": "Orders",
         "requires_approval": False
     },
     EventType.WALLET_LOAD_REQUESTED: {
         "label": "Wallet Load Request",
-        "description": "Client requested wallet funding",
+        "description": "Client requested wallet funding (site)",
         "category": "Wallet",
         "requires_approval": True
     },
@@ -122,6 +134,24 @@ EVENT_METADATA = {
     EventType.WALLET_LOAD_REJECTED: {
         "label": "Wallet Load Rejected",
         "description": "Wallet load rejected",
+        "category": "Wallet",
+        "requires_approval": False
+    },
+    EventType.WALLET_TOPUP_REQUESTED: {
+        "label": "Wallet Top-up Request",
+        "description": "Client requested wallet top-up",
+        "category": "Wallet",
+        "requires_approval": True
+    },
+    EventType.WALLET_TOPUP_APPROVED: {
+        "label": "Wallet Top-up Approved",
+        "description": "Wallet top-up approved",
+        "category": "Wallet",
+        "requires_approval": False
+    },
+    EventType.WALLET_TOPUP_REJECTED: {
+        "label": "Wallet Top-up Rejected",
+        "description": "Wallet top-up rejected",
         "category": "Wallet",
         "requires_approval": False
     },
@@ -157,7 +187,7 @@ EVENT_METADATA = {
     },
     EventType.WITHDRAW_REQUESTED: {
         "label": "Withdrawal Request",
-        "description": "Client requested withdrawal",
+        "description": "Client requested withdrawal (site only)",
         "category": "Withdrawals",
         "requires_approval": True
     },
