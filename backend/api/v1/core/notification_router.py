@@ -410,19 +410,20 @@ class NotificationRouter:
             message = NotificationRouter._format_message(payload)
             
             # Build inline keyboard if approval buttons needed
+            # STANDARDIZED FORMAT: action:entity_type:entity_id
             reply_markup = None
             if show_approval_buttons and payload.action_data:
-                action_prefix = payload.action_data.get('action_prefix', 'action')
+                entity_type = payload.action_data.get('entity_type', payload.reference_type or 'item')
                 reference_id = payload.action_data.get('reference_id', payload.reference_id)
                 
                 reply_markup = {
                     "inline_keyboard": [
                         [
-                            {"text": "✅ Approve", "callback_data": f"{action_prefix}_approve:{reference_id}"},
-                            {"text": "❌ Reject", "callback_data": f"{action_prefix}_reject:{reference_id}"}
+                            {"text": "✅ Approve", "callback_data": f"approve:{entity_type}:{reference_id}"},
+                            {"text": "❌ Reject", "callback_data": f"reject:{entity_type}:{reference_id}"}
                         ],
                         [
-                            {"text": "👁 View Details", "callback_data": f"{action_prefix}_view:{reference_id}"}
+                            {"text": "👁 View Details", "callback_data": f"view:{entity_type}:{reference_id}"}
                         ]
                     ]
                 }
