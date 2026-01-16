@@ -173,7 +173,7 @@ const PortalWallet = () => {
         
         try {
           const response = await axios.post(
-            `${BACKEND_URL}/api/v1/wallet/load-request`,
+            `${API_BASE}/api/v1/wallet/load-request`,
             {
               amount: parseFloat(loadAmount),
               payment_method: selectedMethod,
