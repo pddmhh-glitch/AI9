@@ -570,3 +570,430 @@ If you received this, your bot is configured correctly! ✅"""
                 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ==================== TELEGRAM WEBHOOK HANDLER ====================
+
+@router.post("/webhook/{bot_token}")
+async def telegram_webhook(request: Request, bot_token: str):
+    """
+    POST /api/v1/admin/telegram/webhook/{bot_token}
+    Handle Telegram webhook callbacks (button presses, etc.)
+    """
+    try:
+        body = await request.json()
+        logger.info(f"Telegram webhook received: {json.dumps(body)[:500]}")
+        
+        # Find the bot by token
+        bot = await fetch_one("""
+            SELECT * FROM telegram_bots WHERE bot_token = $1 AND is_active = TRUE
+        """, bot_token)
+        
+        if not bot:
+            logger.warning(f"Unknown bot token in webhook")
+            return {"ok": True}  # Always return ok to Telegram
+        
+        # Handle callback query (button press)
+        if 'callback_query' in body:
+            callback = body['callback_query']
+            callback_id = callback.get('id')
+            callback_data = callback.get('data', '')
+            from_user = callback.get('from', {})
+            message = callback.get('message', {})
+            chat_id = message.get('chat', {}).get('id')
+            message_id = message.get('message_id')
+            
+            logger.info(f"Callback received: {callback_data} from user {from_user.get('id')}")
+            
+            # Parse callback data (format: action_type:reference_id)
+            if ':' in callback_data:
+                action, reference_id = callback_data.split(':', 1)
+            else:
+                action = callback_data
+                reference_id = None
+            
+            result = await process_telegram_callback(
+                bot=bot,
+                action=action,
+                reference_id=reference_id,
+                callback_id=callback_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                from_user=from_user
+            )
+            
+            return {"ok": True, "result": result}
+        
+        # Handle regular message (for future use)
+        if 'message' in body:
+            logger.info(f"Regular message received (not handling)")
+        
+        return {"ok": True}
+        
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {e}")
+        return {"ok": True}  # Always return ok
+
+
+async def process_telegram_callback(
+    bot: dict,
+    action: str,
+    reference_id: str,
+    callback_id: str,
+    chat_id: int,
+    message_id: int,
+    from_user: dict
+):
+    """Process Telegram callback button press"""
+    import httpx
+    
+    bot_token = bot['bot_token']
+    response_text = ""
+    
+    try:
+        # Handle wallet load actions
+        if action == 'wl_approve':
+            result = await handle_wallet_action(reference_id, 'APPROVE', from_user)
+            response_text = f"✅ Wallet load approved!\n\nAmount: ₱{result.get('amount', 0):,.2f}\nNew Balance: ₱{result.get('new_balance', 0):,.2f}"
+            
+        elif action == 'wl_reject':
+            result = await handle_wallet_action(reference_id, 'REJECT', from_user)
+            response_text = f"❌ Wallet load rejected.\n\nReason: Admin rejection"
+            
+        elif action == 'wl_view':
+            result = await get_wallet_request_details(reference_id)
+            response_text = f"""📋 *Wallet Load Details*
+
+🆔 Request ID: `{reference_id[:8]}...`
+👤 User: {result.get('display_name', 'N/A')} (@{result.get('username', 'N/A')})
+💵 Amount: ₱{result.get('amount', 0):,.2f}
+💳 Method: {result.get('payment_method', 'N/A')}
+📅 Status: {result.get('status', 'unknown').upper()}
+⏰ Created: {result.get('created_at', 'N/A')}"""
+        
+        # Handle order actions
+        elif action == 'order_approve':
+            result = await handle_order_action(reference_id, 'APPROVE', from_user)
+            response_text = f"✅ Order approved!"
+            
+        elif action == 'order_reject':
+            result = await handle_order_action(reference_id, 'REJECT', from_user)
+            response_text = f"❌ Order rejected."
+            
+        elif action == 'order_view':
+            result = await get_order_details(reference_id)
+            response_text = f"📋 Order Details: {json.dumps(result, indent=2)[:500]}"
+        
+        else:
+            response_text = f"⚠️ Unknown action: {action}"
+        
+        # Answer callback query (removes loading indicator)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                json={
+                    "callback_query_id": callback_id,
+                    "text": response_text[:200],  # Max 200 chars for popup
+                    "show_alert": True
+                }
+            )
+            
+            # Update the original message to show action taken
+            if action.endswith('_approve') or action.endswith('_reject'):
+                action_taken = "APPROVED ✅" if action.endswith('_approve') else "REJECTED ❌"
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup",
+                    json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "reply_markup": {
+                            "inline_keyboard": [
+                                [{"text": f"Action: {action_taken}", "callback_data": "done"}]
+                            ]
+                        }
+                    }
+                )
+        
+        return {"success": True, "action": action, "response": response_text}
+        
+    except Exception as e:
+        logger.error(f"Error processing callback {action}: {e}")
+        
+        # Still answer callback to remove loading
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                    json={
+                        "callback_query_id": callback_id,
+                        "text": f"❌ Error: {str(e)[:100]}",
+                        "show_alert": True
+                    }
+                )
+        except:
+            pass
+        
+        return {"success": False, "error": str(e)}
+
+
+async def handle_wallet_action(request_id: str, action: str, from_user: dict):
+    """Handle wallet load approval/rejection from Telegram"""
+    from ..core.database import get_pool
+    
+    load_request = await fetch_one("""
+        SELECT * FROM wallet_load_requests WHERE request_id = $1
+    """, request_id)
+    
+    if not load_request:
+        raise Exception("Request not found")
+    
+    if load_request['status'] != 'pending':
+        raise Exception(f"Request already {load_request['status']}")
+    
+    admin_id = f"telegram:{from_user.get('id', 'unknown')}"
+    now = datetime.now(timezone.utc)
+    
+    if action == 'APPROVE':
+        user = await fetch_one("SELECT * FROM users WHERE user_id = $1", load_request['user_id'])
+        if not user:
+            raise Exception("User not found")
+        
+        current_balance = float(user.get('real_balance', 0) or 0)
+        new_balance = current_balance + load_request['amount']
+        
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("""
+                    UPDATE users SET real_balance = $1, updated_at = NOW()
+                    WHERE user_id = $2
+                """, new_balance, load_request['user_id'])
+                
+                await conn.execute("""
+                    UPDATE wallet_load_requests 
+                    SET status = 'approved', reviewed_by = $1, reviewed_at = $2, updated_at = NOW()
+                    WHERE request_id = $3
+                """, admin_id, now, request_id)
+                
+                await conn.execute("""
+                    INSERT INTO wallet_ledger 
+                    (ledger_id, user_id, transaction_type, amount, balance_before, balance_after,
+                     reference_type, reference_id, description, created_at)
+                    VALUES ($1, $2, 'credit', $3, $4, $5, 'wallet_load', $6, $7, NOW())
+                """, str(uuid.uuid4()), load_request['user_id'], load_request['amount'],
+                   current_balance, new_balance, request_id, 
+                   f"Wallet load via {load_request['payment_method']} (Telegram approved)")
+        
+        # Emit notification
+        from ..core.notification_router import emit_event, EventType
+        await emit_event(
+            event_type=EventType.WALLET_LOAD_APPROVED,
+            title="Wallet Load Approved (via Telegram)",
+            message=f"Wallet load of ₱{load_request['amount']:,.2f} approved via Telegram.\n\nNew balance: ₱{new_balance:,.2f}",
+            reference_id=request_id,
+            reference_type="wallet_load",
+            user_id=load_request['user_id'],
+            username=user.get('username'),
+            display_name=user.get('display_name'),
+            amount=load_request['amount'],
+            extra_data={"new_balance": new_balance, "approved_via": "telegram"},
+            requires_action=False
+        )
+        
+        return {"amount": load_request['amount'], "new_balance": new_balance}
+    
+    elif action == 'REJECT':
+        user = await fetch_one("SELECT * FROM users WHERE user_id = $1", load_request['user_id'])
+        
+        await execute("""
+            UPDATE wallet_load_requests 
+            SET status = 'rejected', reviewed_by = $1, reviewed_at = $2, 
+                rejection_reason = 'Rejected via Telegram', updated_at = NOW()
+            WHERE request_id = $3
+        """, admin_id, now, request_id)
+        
+        # Emit notification
+        from ..core.notification_router import emit_event, EventType
+        await emit_event(
+            event_type=EventType.WALLET_LOAD_REJECTED,
+            title="Wallet Load Rejected (via Telegram)",
+            message=f"Wallet load of ₱{load_request['amount']:,.2f} rejected via Telegram.",
+            reference_id=request_id,
+            reference_type="wallet_load",
+            user_id=load_request['user_id'],
+            username=user.get('username') if user else None,
+            display_name=user.get('display_name') if user else None,
+            amount=load_request['amount'],
+            extra_data={"rejected_via": "telegram"},
+            requires_action=False
+        )
+        
+        return {"amount": load_request['amount'], "status": "rejected"}
+
+
+async def get_wallet_request_details(request_id: str):
+    """Get wallet load request details"""
+    result = await fetch_one("""
+        SELECT wlr.*, u.username, u.display_name
+        FROM wallet_load_requests wlr
+        JOIN users u ON wlr.user_id = u.user_id
+        WHERE wlr.request_id = $1
+    """, request_id)
+    
+    if not result:
+        return {"error": "Request not found"}
+    
+    return {
+        "request_id": result['request_id'],
+        "username": result['username'],
+        "display_name": result['display_name'],
+        "amount": float(result['amount']),
+        "payment_method": result['payment_method'],
+        "status": result['status'],
+        "created_at": result['created_at'].strftime('%Y-%m-%d %H:%M UTC') if result['created_at'] else 'N/A'
+    }
+
+
+async def handle_order_action(order_id: str, action: str, from_user: dict):
+    """Handle order approval/rejection from Telegram"""
+    # Placeholder - implement based on your order system
+    return {"order_id": order_id, "action": action}
+
+
+async def get_order_details(order_id: str):
+    """Get order details"""
+    result = await fetch_one("""
+        SELECT * FROM orders WHERE order_id = $1
+    """, order_id)
+    return dict(result) if result else {"error": "Order not found"}
+
+
+# ==================== WEBHOOK SETUP ENDPOINT ====================
+
+@router.post("/bots/{bot_id}/setup-webhook")
+async def setup_bot_webhook(
+    request: Request,
+    bot_id: str,
+    authorization: str = Header(..., alias="Authorization")
+):
+    """
+    POST /api/v1/admin/telegram/bots/{bot_id}/setup-webhook
+    Set up Telegram webhook for a bot to receive button callbacks
+    """
+    await require_admin(request, authorization)
+    
+    bot = await fetch_one("""
+        SELECT * FROM telegram_bots WHERE bot_id = $1
+    """, bot_id)
+    
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    
+    # Get the backend URL from environment
+    import os
+    backend_url = os.environ.get('BACKEND_URL', '')
+    
+    if not backend_url:
+        # Try to construct from request
+        backend_url = str(request.base_url).rstrip('/')
+    
+    webhook_url = f"{backend_url}/api/v1/admin/telegram/webhook/{bot['bot_token']}"
+    
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Set webhook
+            response = await client.post(
+                f"https://api.telegram.org/bot{bot['bot_token']}/setWebhook",
+                json={
+                    "url": webhook_url,
+                    "allowed_updates": ["callback_query", "message"]
+                }
+            )
+            
+            result = response.json()
+            
+            if result.get('ok'):
+                return {
+                    "success": True,
+                    "message": "Webhook set up successfully",
+                    "webhook_url": webhook_url
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get('description', 'Unknown error')
+                }
+                
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/bots/{bot_id}/webhook-info")
+async def get_bot_webhook_info(
+    request: Request,
+    bot_id: str,
+    authorization: str = Header(..., alias="Authorization")
+):
+    """
+    GET /api/v1/admin/telegram/bots/{bot_id}/webhook-info
+    Get current webhook info for a bot
+    """
+    await require_admin(request, authorization)
+    
+    bot = await fetch_one("""
+        SELECT * FROM telegram_bots WHERE bot_id = $1
+    """, bot_id)
+    
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"https://api.telegram.org/bot{bot['bot_token']}/getWebhookInfo"
+            )
+            
+            result = response.json()
+            return {"success": True, "webhook_info": result.get('result', {})}
+                
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/bots/{bot_id}/webhook")
+async def delete_bot_webhook(
+    request: Request,
+    bot_id: str,
+    authorization: str = Header(..., alias="Authorization")
+):
+    """
+    DELETE /api/v1/admin/telegram/bots/{bot_id}/webhook
+    Remove webhook from a bot (switch to polling mode)
+    """
+    await require_admin(request, authorization)
+    
+    bot = await fetch_one("""
+        SELECT * FROM telegram_bots WHERE bot_id = $1
+    """, bot_id)
+    
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"https://api.telegram.org/bot{bot['bot_token']}/deleteWebhook"
+            )
+            
+            result = response.json()
+            
+            if result.get('ok'):
+                return {"success": True, "message": "Webhook deleted"}
+            else:
+                return {"success": False, "error": result.get('description')}
+                
+    except Exception as e:
+        return {"success": False, "error": str(e)}
