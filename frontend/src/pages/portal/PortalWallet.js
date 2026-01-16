@@ -88,7 +88,7 @@ const PortalWallet = () => {
 
   const fetchPaymentQR = async () => {
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/v1/wallet/qr`, { headers: getAuthHeaders() });
+      const response = await axios.get(`${API_BASE}/api/v1/wallet/qr`, { headers: getAuthHeaders() });
       setPaymentMethods(response.data.payment_methods || []);
       
       // Group QR codes by method
