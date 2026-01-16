@@ -592,41 +592,6 @@ const AdminOperationsPanel = () => {
       )}
                   setEditingItem(null);
                   resetActionForm();
-                  setShowActionModal(true);
-                }}
-                className="flex items-center gap-2 px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-black rounded-lg transition"
-              >
-                <Plus className="w-4 h-4" />
-                Add Action
-              </button>
-            </div>
-
-            {telegramActions.length === 0 ? (
-              <div className="text-center py-12">
-                <Zap className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                <p className="text-gray-400">No actions configured</p>
-                <p className="text-gray-500 text-sm">Add actions to create Telegram inline buttons</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-800">
-                {telegramActions.map(action => (
-                  <ActionRow
-                    key={action.id}
-                    action={action}
-                    onEdit={() => {
-                      setEditingItem(action);
-                      setActionForm(action);
-                      setShowActionModal(true);
-                    }}
-                    onDelete={() => handleDeleteItem('telegram-actions', action.id)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Order States Tab */}
       {activeTab === 'states' && (
         <div className="space-y-6">
