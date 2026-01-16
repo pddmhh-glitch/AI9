@@ -658,15 +658,124 @@ async def handle_wallet_load_action(bot, action, request_id, callback_id, messag
     return {"success": False}
 
 
-async def handle_order_action(bot, action, order_id, callback_id, message_id, admin_name, admin_id):
-    """Handle order approve/reject with idempotency"""
+async def handle_order_action(bot, action, order_id, callback_id, message_id, admin_name, admin_id, extra_value=None):
+    """Handle order approve/reject/edit_amount with idempotency"""
     order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     
     if not order:
         await answer_callback(bot['bot_token'], callback_id, "Order not found")
         return {"success": False}
     
-    # Idempotency check
+    now = datetime.now(timezone.utc)
+    
+    # Handle edit_amount action - show amount options
+    if action == 'edit_amount':
+        # Check if already processed
+        if order['status'] not in ['pending_review', 'initiated', 'awaiting_payment_proof']:
+            await answer_callback(bot['bot_token'], callback_id, f"Cannot edit - already {order['status']}")
+            return {"success": False}
+        
+        # Check if already adjusted
+        if order.get('amount_adjusted'):
+            await answer_callback(bot['bot_token'], callback_id, "Amount already adjusted once")
+            return {"success": False}
+        
+        # Show edit options
+        current_amount = order['amount']
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{bot['bot_token']}/editMessageReplyMarkup",
+                json={
+                    "chat_id": bot['chat_id'],
+                    "message_id": message_id,
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [
+                                {"text": f"-₱1.00", "callback_data": f"set_amount:order:{order_id}:{current_amount - 1}"},
+                                {"text": f"-₱0.50", "callback_data": f"set_amount:order:{order_id}:{current_amount - 0.5}"},
+                            ],
+                            [
+                                {"text": f"-₱5.00", "callback_data": f"set_amount:order:{order_id}:{current_amount - 5}"},
+                                {"text": f"-₱10.00", "callback_data": f"set_amount:order:{order_id}:{current_amount - 10}"},
+                            ],
+                            [
+                                {"text": "🔙 Cancel Edit", "callback_data": f"cancel_edit:order:{order_id}"}
+                            ]
+                        ]
+                    }
+                }
+            )
+        await answer_callback(bot['bot_token'], callback_id, f"Select amount adjustment (current: ₱{current_amount:,.2f})")
+        return {"success": True, "action": "edit_shown"}
+    
+    # Handle set_amount action
+    if action == 'set_amount' and extra_value is not None:
+        try:
+            new_amount = float(extra_value)
+        except:
+            await answer_callback(bot['bot_token'], callback_id, "Invalid amount")
+            return {"success": False}
+        
+        if new_amount <= 0:
+            await answer_callback(bot['bot_token'], callback_id, "Amount must be > 0")
+            return {"success": False}
+        
+        if order['status'] not in ['pending_review', 'initiated', 'awaiting_payment_proof']:
+            await answer_callback(bot['bot_token'], callback_id, f"Cannot edit - already {order['status']}")
+            return {"success": False}
+        
+        if order.get('amount_adjusted'):
+            await answer_callback(bot['bot_token'], callback_id, "Amount already adjusted once")
+            return {"success": False}
+        
+        old_amount = order['amount']
+        
+        # Update order with new amount
+        await execute('''
+            UPDATE orders SET 
+                amount = $1, 
+                total_amount = $1 + bonus_amount,
+                amount_adjusted = TRUE,
+                adjusted_by = $2,
+                adjusted_at = $3,
+                updated_at = NOW()
+            WHERE order_id = $4
+        ''', new_amount, admin_id, now, order_id)
+        
+        # Restore approval buttons
+        await update_message_with_edit_buttons(
+            bot['bot_token'], bot['chat_id'], message_id, order_id,
+            f"💰 Amount: ₱{old_amount:,.2f} → ₱{new_amount:,.2f} (Edited by {admin_name})"
+        )
+        await answer_callback(bot['bot_token'], callback_id, f"✏️ Amount adjusted: ₱{new_amount:,.2f}")
+        
+        # Emit notification
+        from ..core.notification_router import emit_event
+        await emit_event(
+            event_type=EventType.ORDER_AMOUNT_ADJUSTED,
+            title="Order Amount Adjusted",
+            message=f"Amount changed from ₱{old_amount:,.2f} to ₱{new_amount:,.2f} by {admin_name}",
+            reference_id=order_id,
+            reference_type="order",
+            user_id=order['user_id'],
+            username=order['username'],
+            amount=new_amount,
+            extra_data={"old_amount": old_amount, "adjusted_by": admin_name},
+            requires_action=True
+        )
+        
+        return {"success": True, "old_amount": old_amount, "new_amount": new_amount}
+    
+    # Handle cancel_edit action
+    if action == 'cancel_edit':
+        await update_message_with_edit_buttons(
+            bot['bot_token'], bot['chat_id'], message_id, order_id
+        )
+        await answer_callback(bot['bot_token'], callback_id, "Edit cancelled")
+        return {"success": True}
+    
+    # Idempotency check for approve/reject
     if order['status'] not in ['pending_review', 'initiated', 'awaiting_payment_proof']:
         await answer_callback(
             bot['bot_token'], callback_id,
@@ -674,29 +783,40 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
         )
         return {"success": False, "reason": "already_processed"}
     
-    now = datetime.now(timezone.utc)
+    # Get final amount (may have been adjusted)
+    final_amount = order.get('amount', order['amount'])
     
     if action == 'approve':
-        # Update user balance for deposits
-        if order['order_type'] == 'deposit':
-            await execute('''
-                UPDATE users 
-                SET real_balance = real_balance + $1,
-                    bonus_balance = bonus_balance + $2,
-                    deposit_count = deposit_count + 1,
-                    total_deposited = total_deposited + $1
-                WHERE user_id = $3
-            ''', order['amount'], order['bonus_amount'], order['user_id'])
+        # Update user balance for deposits/game loads
+        if order['order_type'] in ['deposit', 'game_load']:
+            # For game loads from Chatwoot - DO NOT credit wallet
+            # Instead, trigger game load
+            if order['order_type'] == 'game_load' or order.get('metadata', {}).get('created_by') == 'bot':
+                # This is a game load order - trigger game load, not wallet credit
+                pass  # Game load will be handled separately
+            else:
+                await execute('''
+                    UPDATE users 
+                    SET real_balance = real_balance + $1,
+                        bonus_balance = bonus_balance + $2,
+                        deposit_count = deposit_count + 1,
+                        total_deposited = total_deposited + $1
+                    WHERE user_id = $3
+                ''', final_amount, order['bonus_amount'], order['user_id'])
         
         await execute('''
             UPDATE orders SET status = 'approved', approved_by = $1, approved_at = $2, updated_at = NOW()
             WHERE order_id = $3
         ''', admin_id, now, order_id)
         
-        await answer_callback(bot['bot_token'], callback_id, "✅ Order Approved!")
+        amount_note = ""
+        if order.get('amount_adjusted'):
+            amount_note = f" (adjusted to ₱{final_amount:,.2f})"
+        
+        await answer_callback(bot['bot_token'], callback_id, f"✅ Order Approved!{amount_note}")
         await update_message_with_result(
             bot['bot_token'], bot['chat_id'], message_id,
-            f"✅ APPROVED by {admin_name}"
+            f"✅ APPROVED by {admin_name}{amount_note}"
         )
         
         # Emit notification
@@ -709,8 +829,8 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
             reference_type="order",
             user_id=order['user_id'],
             username=order['username'],
-            amount=order['amount'],
-            extra_data={"approved_via": "telegram"},
+            amount=final_amount,
+            extra_data={"approved_via": "telegram", "amount_adjusted": order.get('amount_adjusted', False)},
             requires_action=False
         )
         
