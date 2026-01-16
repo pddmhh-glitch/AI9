@@ -50,10 +50,10 @@ const PortalWallet = () => {
   const fetchData = async () => {
     try {
       const [walletRes, bonusRes, cashoutRes, historyRes] = await Promise.all([
-        axios.get(`${BACKEND_URL}/api/v1/wallet/balance`, { headers: getAuthHeaders() }),
-        axios.get(`${BACKEND_URL}/api/v1/portal/wallet/bonus-progress`, { headers: getAuthHeaders() }).catch(() => ({ data: {} })),
-        axios.get(`${BACKEND_URL}/api/v1/portal/wallet/cashout-preview`, { headers: getAuthHeaders() }).catch(() => ({ data: {} })),
-        axios.get(`${BACKEND_URL}/api/v1/wallet/load-history`, { headers: getAuthHeaders() }).catch(() => ({ data: { requests: [] } }))
+        axios.get(`${API_BASE}/api/v1/wallet/balance`, { headers: getAuthHeaders() }),
+        axios.get(`${API_BASE}/api/v1/portal/wallet/bonus-progress`, { headers: getAuthHeaders() }).catch(() => ({ data: {} })),
+        axios.get(`${API_BASE}/api/v1/portal/wallet/cashout-preview`, { headers: getAuthHeaders() }).catch(() => ({ data: {} })),
+        axios.get(`${API_BASE}/api/v1/wallet/load-history`, { headers: getAuthHeaders() }).catch(() => ({ data: { requests: [] } }))
       ]);
       
       setWalletData({
