@@ -248,7 +248,7 @@ Build a production-grade gaming transaction platform with one central backend th
 ---
 
 ## Credentials
-- **Admin**: `admin` / `admin123`
+- **Admin**: `admin` / `password`
 - **URL**: https://refactor-central.preview.emergentagent.com
 
 ---
