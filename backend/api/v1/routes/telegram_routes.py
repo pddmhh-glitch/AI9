@@ -612,6 +612,11 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
     
     order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     
+    # Refreshed order data check - for edit actions we need current state
+    if not order:
+        await answer_callback(bot['bot_token'], callback_id, "Order not found")
+        return {"success": False}
+    
     if not order:
         await answer_callback(bot['bot_token'], callback_id, "Order not found")
         return {"success": False}
@@ -725,96 +730,55 @@ async def handle_order_action(bot, action, order_id, callback_id, message_id, ad
         await answer_callback(bot['bot_token'], callback_id, "Edit cancelled")
         return {"success": True}
     
-    # Idempotency check for approve/reject
-    if order['status'] not in ['pending_review', 'initiated', 'awaiting_payment_proof']:
-        await answer_callback(
-            bot['bot_token'], callback_id,
-            f"Already {order['status']}", show_alert=True
-        )
-        return {"success": False, "reason": "already_processed"}
-    
-    # Get final amount (may have been adjusted)
-    final_amount = order.get('amount', order['amount'])
-    
+    # Use centralized approval service for approve/reject
     if action == 'approve':
-        # Update user balance for deposits/game loads
-        if order['order_type'] in ['deposit', 'game_load']:
-            # For game loads from Chatwoot - DO NOT credit wallet
-            # Instead, trigger game load
-            if order['order_type'] == 'game_load' or order.get('metadata', {}).get('created_by') == 'bot':
-                # This is a game load order - trigger game load, not wallet credit
-                pass  # Game load will be handled separately
-            else:
-                await execute('''
-                    UPDATE users 
-                    SET real_balance = real_balance + $1,
-                        bonus_balance = bonus_balance + $2,
-                        deposit_count = deposit_count + 1,
-                        total_deposited = total_deposited + $1
-                    WHERE user_id = $3
-                ''', final_amount, order['bonus_amount'], order['user_id'])
-        
-        await execute('''
-            UPDATE orders SET status = 'approved', approved_by = $1, approved_at = $2, updated_at = NOW()
-            WHERE order_id = $3
-        ''', admin_id, now, order_id)
-        
-        amount_note = ""
-        if order.get('amount_adjusted'):
-            amount_note = f" (adjusted to ₱{final_amount:,.2f})"
-        
-        await answer_callback(bot['bot_token'], callback_id, f"✅ Order Approved!{amount_note}")
-        await update_message_with_result(
-            bot['bot_token'], bot['chat_id'], message_id,
-            f"✅ APPROVED by {admin_name}{amount_note}"
+        result = await approve_or_reject_order(
+            order_id=order_id,
+            action="approve",
+            actor_type=ActorType.TELEGRAM_BOT,
+            actor_id=admin_id,
+            bot_id=bot['bot_id']
         )
         
-        # Emit notification
-        from ..core.notification_router import emit_event
-        await emit_event(
-            event_type=EventType.ORDER_APPROVED,
-            title="Order Approved",
-            message=f"Approved by {admin_name} via Telegram",
-            reference_id=order_id,
-            reference_type="order",
-            user_id=order['user_id'],
-            username=order['username'],
-            amount=final_amount,
-            extra_data={"approved_via": "telegram", "amount_adjusted": order.get('amount_adjusted', False)},
-            requires_action=False
-        )
+        if result.success:
+            amount_note = ""
+            if result.data.get('amount_adjusted'):
+                amount_note = f" (adjusted to ₱{result.data.get('amount', 0):,.2f})"
+            
+            await answer_callback(bot['bot_token'], callback_id, f"✅ Order Approved!{amount_note}")
+            await update_message_with_result(
+                bot['bot_token'], bot['chat_id'], message_id,
+                f"✅ APPROVED by {admin_name}{amount_note}"
+            )
+        else:
+            already_processed = result.data.get('already_processed', False)
+            await answer_callback(
+                bot['bot_token'], callback_id,
+                result.message, show_alert=already_processed
+            )
         
-        return {"success": True}
+        return {"success": result.success, **result.data}
     
     elif action == 'reject':
-        await execute('''
-            UPDATE orders SET status = 'rejected', rejection_reason = 'Rejected via Telegram',
-            approved_by = $1, approved_at = $2, updated_at = NOW()
-            WHERE order_id = $3
-        ''', admin_id, now, order_id)
-        
-        await answer_callback(bot['bot_token'], callback_id, "❌ Order Rejected")
-        await update_message_with_result(
-            bot['bot_token'], bot['chat_id'], message_id,
-            f"❌ REJECTED by {admin_name}"
+        result = await approve_or_reject_order(
+            order_id=order_id,
+            action="reject",
+            actor_type=ActorType.TELEGRAM_BOT,
+            actor_id=admin_id,
+            rejection_reason="Rejected via Telegram",
+            bot_id=bot['bot_id']
         )
         
-        # Emit notification
-        from ..core.notification_router import emit_event
-        await emit_event(
-            event_type=EventType.ORDER_REJECTED,
-            title="Order Rejected",
-            message=f"Rejected by {admin_name} via Telegram",
-            reference_id=order_id,
-            reference_type="order",
-            user_id=order['user_id'],
-            username=order['username'],
-            amount=order['amount'],
-            extra_data={"rejected_via": "telegram"},
-            requires_action=False
-        )
+        if result.success:
+            await answer_callback(bot['bot_token'], callback_id, "❌ Order Rejected")
+            await update_message_with_result(
+                bot['bot_token'], bot['chat_id'], message_id,
+                f"❌ REJECTED by {admin_name}"
+            )
+        else:
+            await answer_callback(bot['bot_token'], callback_id, result.message, show_alert=True)
         
-        return {"success": True}
+        return {"success": result.success, **result.data}
     
     return {"success": False}
 
