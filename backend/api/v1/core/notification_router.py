@@ -72,6 +72,18 @@ class EventType(str, Enum):
 
 # Event metadata for UI display
 EVENT_METADATA = {
+    EventType.USER_REGISTERED: {
+        "label": "New Client Registered",
+        "description": "A new user signed up on the platform",
+        "category": "Users",
+        "requires_approval": False
+    },
+    EventType.USER_LOGIN: {
+        "label": "User Login",
+        "description": "User logged into the platform",
+        "category": "Users",
+        "requires_approval": False
+    },
     EventType.ORDER_CREATED: {
         "label": "Order Created",
         "description": "New deposit/withdrawal order created",
@@ -172,6 +184,18 @@ EVENT_METADATA = {
         "label": "Referral Reward",
         "description": "Referral reward granted",
         "category": "Referrals",
+        "requires_approval": False
+    },
+    EventType.PROMO_CODE_REDEEMED: {
+        "label": "Promo Code Redeemed",
+        "description": "A user redeemed a promotional code",
+        "category": "Promo Codes",
+        "requires_approval": False
+    },
+    EventType.PROMO_CODE_CREATED: {
+        "label": "Promo Code Created",
+        "description": "New promotional code created",
+        "category": "Promo Codes",
         "requires_approval": False
     },
     EventType.TRANSACTION_LOGGED: {
