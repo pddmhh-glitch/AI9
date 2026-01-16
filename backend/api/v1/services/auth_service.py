@@ -79,6 +79,43 @@ async def create_user(
         "referred_by": referred_by_code
     })
     
+    # Emit USER_REGISTERED notification
+    try:
+        from ..core.notification_router import emit_event, EventType
+        await emit_event(
+            event_type=EventType.USER_REGISTERED,
+            title="🆕 New Client Registered",
+            message=f"A new client has joined the platform!\n\nUsername: @{username}\nDisplay Name: {display_name}" + (f"\nReferred by: {referred_by_code}" if referred_by_code else ""),
+            reference_id=user_id,
+            reference_type="user",
+            user_id=user_id,
+            username=username,
+            display_name=display_name,
+            extra_data={"referred_by": referred_by_code},
+            requires_action=False
+        )
+        
+        # If user was referred, also emit REFERRAL_JOINED
+        if referrer_user_id:
+            referrer = await fetch_one("SELECT username, display_name FROM users WHERE user_id = $1", referrer_user_id)
+            if referrer:
+                await emit_event(
+                    event_type=EventType.REFERRAL_JOINED,
+                    title="👥 New Referral Joined",
+                    message=f"A new user joined via referral!\n\nNew User: @{username}\nReferred By: @{referrer['username']}",
+                    reference_id=user_id,
+                    reference_type="referral",
+                    user_id=referrer_user_id,
+                    username=referrer['username'],
+                    display_name=referrer['display_name'],
+                    extra_data={"new_user": username, "referral_code": referred_by_code},
+                    requires_action=False
+                )
+    except Exception as e:
+        # Don't fail signup if notification fails
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to send signup notification: {e}")
+    
     return True, {
         "user_id": user_id,
         "username": username,
