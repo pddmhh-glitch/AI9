@@ -15,22 +15,15 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }) => {
-  // Demo mode: provide mock user data for UI preview
-  const DEMO_MODE = true;
-  const mockUser = DEMO_MODE ? {
-    user_id: 'demo-user-123',
-    username: 'demo_user',
-    display_name: 'Demo User',
-    referral_code: 'DEMO2024',
-    role: 'user',
-    has_password: false
-  } : null;
+  // DEMO_MODE OFF - require real authentication
+  const DEMO_MODE = false;
+  const mockUser = null; // No mock user in production
 
   const [user, setUser] = useState(mockUser);
   const [token, setToken] = useState(localStorage.getItem('token'));
-  const [clientToken, setClientToken] = useState(DEMO_MODE ? 'demo-token' : localStorage.getItem('clientToken'));
+  const [clientToken, setClientToken] = useState(localStorage.getItem('clientToken'));
   const [portalToken, setPortalToken] = useState(localStorage.getItem('portalToken'));
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!DEMO_MODE);
 
   useEffect(() => {
     const initAuth = async () => {
