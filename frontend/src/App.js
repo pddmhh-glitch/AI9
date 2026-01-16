@@ -174,7 +174,8 @@ function App() {
               <Route path="system/rewards" element={<AdminRewardsPage />} />
               <Route path="system/automations" element={<AdminOperationsPanel />} />
               <Route path="system/payment-methods" element={<AdminPaymentPanel />} />
-              <Route path="system/telegram" element={<AdminTelegramSetup />} />
+              {/* Legacy telegram route redirects to new multi-bot system */}
+              <Route path="system/telegram" element={<TelegramBots />} />
               <Route path="system/telegram-bots" element={<TelegramBots />} />
               <Route path="system/payment-qr" element={<AdminPaymentQR />} />
               <Route path="system/wallet-loads" element={<AdminWalletLoads />} />
@@ -185,7 +186,8 @@ function App() {
               {/* Legacy routes - redirect or keep for backwards compat */}
               <Route path="operations" element={<AdminOperationsPanel />} />
               <Route path="payment-panel" element={<AdminPaymentPanel />} />
-              <Route path="telegram" element={<AdminTelegramSetup />} />
+              {/* Legacy telegram route redirects to new multi-bot system */}
+              <Route path="telegram" element={<TelegramBots />} />
               <Route path="settings" element={<AdminSettings />} />
             </Route>
             
