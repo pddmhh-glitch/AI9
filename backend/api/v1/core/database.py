@@ -377,7 +377,9 @@ async def init_api_v1_db():
             )
         ''')
         
-        # ==================== TELEGRAM CONFIG ====================
+        # ==================== TELEGRAM CONFIG (LEGACY - DEPRECATED) ====================
+        # Keeping table for backwards compat but NOT seeding data
+        # Use telegram_bots table for multi-bot system instead
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS telegram_config (
                 id VARCHAR(36) PRIMARY KEY DEFAULT 'default',
