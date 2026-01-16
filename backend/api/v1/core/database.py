@@ -545,16 +545,7 @@ async def init_api_v1_db():
                 INSERT INTO system_settings (id) VALUES ('global')
             ''')
         
-        # Seed telegram config if not exists
-        tg_exists = await conn.fetchval("SELECT COUNT(*) FROM telegram_config WHERE id = 'default'")
-        if not tg_exists:
-            await conn.execute('''
-                INSERT INTO telegram_config (id, inline_actions) VALUES ('default', $1)
-            ''', json.dumps([
-                {"name": "approve", "button_text": "✅ Approve", "action": "confirm"},
-                {"name": "reject", "button_text": "❌ Reject", "action": "reject", "requires_reason": True},
-                {"name": "view", "button_text": "👁 View Details", "action": "view"}
-            ]))
+        # Note: Legacy telegram_config seeding removed - use multi-bot system (telegram_bots table)
         
         # ==================== PAYMENT QR CODES ====================
         await conn.execute('''
