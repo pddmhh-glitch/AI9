@@ -464,7 +464,7 @@ async def handle_callback_query(callback: dict):
         logger.warning(f"No active bot found for chat_id {chat_id}")
         return {"ok": True}
     
-    # Parse callback data: action:entity_type:entity_id
+    # Parse callback data: action:entity_type:entity_id[:extra_value]
     parts = callback_data.split(':')
     if len(parts) < 2:
         await answer_callback(bot['bot_token'], callback_id, "Invalid callback format")
@@ -473,9 +473,10 @@ async def handle_callback_query(callback: dict):
     action = parts[0]
     entity_type = parts[1] if len(parts) > 1 else None
     entity_id = parts[2] if len(parts) > 2 else parts[1]  # Backwards compat
+    extra_value = parts[3] if len(parts) > 3 else None  # For set_amount:order:id:19.00
     
     # Validate permissions for approval actions
-    if action in ['approve', 'reject']:
+    if action in ['approve', 'reject', 'edit_amount', 'set_amount']:
         if entity_type == 'wallet_load' and not bot['can_approve_wallet_loads']:
             await answer_callback(bot['bot_token'], callback_id, "❌ This bot cannot approve wallet loads")
             return {"ok": True}
@@ -497,7 +498,8 @@ async def handle_callback_query(callback: dict):
         callback_id=callback_id,
         chat_id=chat_id,
         message_id=message_id,
-        from_user=from_user
+        from_user=from_user,
+        extra_value=extra_value
     )
     
     return {"ok": True, "result": result}
